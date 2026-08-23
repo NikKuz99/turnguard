@@ -1,4 +1,4 @@
-package captcha
+package core
 
 
 import (
@@ -22,15 +22,6 @@ import (
 	tlsclient "github.com/kiper292/tls-client"
 )
 
-// SetCaptchaCallback sets the function used to solve captcha.
-func SetCaptchaCallback(fn func(string) string) {
-	RequestCaptchaCallback = fn
-}
-
-var RequestCaptchaCallback func(redirectURI string) string = func(redirectURI string) string {
-	util.TurnLog("[Captcha] No callback set! Cannot solve: %s", redirectURI[:80])
-	return ""
-}
 
 type VkCaptchaError struct {
 	ErrorCode               int
@@ -153,16 +144,7 @@ func solveVkCaptcha(ctx context.Context, streamID int, client tlsclient.HttpClie
 
 	// Step 2: Fall back to WebView
 	util.TurnLog("[Captcha] Opening WebView for manual solving...")
-	redirectURICStr := C.CString(captchaErr.RedirectUri)
-	defer C.free(unsafe.Pointer(redirectURICStr))
-
-	cToken := C.requestCaptcha(redirectURICStr)
-	if cToken == nil {
-		return "", fmt.Errorf("WebView captcha solving failed: returned nil token")
-	}
-	defer C.free(unsafe.Pointer(cToken))
-
-	successToken = C.GoString(cToken)
+	successToken = RequestCaptchaCallback(captchaErr.RedirectUri)
 	if successToken == "" {
 		return "", fmt.Errorf("WebView captcha solving failed: returned empty token")
 	}

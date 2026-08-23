@@ -1,4 +1,4 @@
-package vk
+package core
 
 
 import (
@@ -93,7 +93,7 @@ func getCustomNetDialer() net.Dialer {
 	return net.Dialer{
 		Timeout:   20 * time.Second,
 		KeepAlive: 30 * time.Second,
-		Control:   protectControl,
+		Control:   util.ProtectControl,
 	}
 }
 
@@ -322,16 +322,7 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 					// Step 2: Fall back to WebView
 					util.TurnLog("[Captcha] Attempt 3. Web view solving...")
 					util.TurnLog("[Captcha] Opening WebView for manual solving...")
-					redirectURICStr := C.CString(captchaErr.RedirectURI)
-					defer C.free(unsafe.Pointer(redirectURICStr))
-				
-					cToken := C.requestCaptcha(redirectURICStr)
-					if cToken == nil {
-						solveErr = fmt.Errorf("WebView captcha solving failed: returned nil token")
-					}
-					defer C.free(unsafe.Pointer(cToken))
-				
-					successToken = C.GoString(cToken)
+					successToken = RequestCaptchaCallback(captchaErr.RedirectURI)
 					if successToken == "" {
 						solveErr = fmt.Errorf("WebView captcha solving failed: returned empty token")
 					} else {
