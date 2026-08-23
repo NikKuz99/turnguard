@@ -36,7 +36,7 @@ type githubRelease struct {
 }
 
 // CurrentVersion returns the current version string.
-var CurrentVersion = "v0.3.0-dev"
+var CurrentVersion = "v0.3.0"
 
 // assetNameForPlatform returns the expected binary name for the current platform.
 func assetNameForPlatform() string {
