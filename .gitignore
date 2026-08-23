@@ -1,8 +1,8 @@
-# Binary
-turnguard
-turnguard.exe
-turnguard-darwin
-turnguard-linux
+# Binaries (not directories)
+/turnguard
+/turnguard.exe
+/turnguard-darwin-*
+/turnguard-linux-*
 
 # Go
 vendor/
@@ -14,11 +14,6 @@ vendor/
 # OS
 .DS_Store
 Thumbs.db
-turnguard
-turnguard-*
-!*.go
-!*.mod
-!*.sum
-!*.md
-!Makefile
-!Dockerfile
+
+# Config
+config.json
