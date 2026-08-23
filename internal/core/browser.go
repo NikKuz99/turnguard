@@ -25,6 +25,10 @@ import (
 // 2. Start HTTP server on a random port
 // 3. Wait for callback (or timeout after 120s)
 func SolveCaptchaBrowser(redirectURI string) string {
+	return SolveCaptchaWithProxy(redirectURI)
+}
+
+func SolveCaptchaBrowserStdin(redirectURI string) string {
 	util.TurnLog("[Captcha] Opening browser for manual captcha solving...")
 	util.TurnLog("[Captcha] URL: %s", redirectURI[:80]+"...")
 
