@@ -14,3 +14,11 @@ vendor/
 # OS
 .DS_Store
 Thumbs.db
+turnguard
+turnguard-*
+!*.go
+!*.mod
+!*.sum
+!*.md
+!Makefile
+!Dockerfile
