@@ -1,0 +1,16 @@
+# Binary
+turnguard
+turnguard.exe
+turnguard-darwin
+turnguard-linux
+
+# Go
+vendor/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
