@@ -103,6 +103,7 @@ func (c *DnsCache) Resolve(ctx context.Context, domain string) (string, error) {
 	c.mu.Lock()
 	c.ips[domain] = ip
 	c.mu.Unlock()
+	Persist.MarkDirty()
 
 	return ip, nil
 }
@@ -132,11 +133,16 @@ func (c *DnsCache) ResolveAll(ctx context.Context, domain string) ([]string, err
 	// 3. Save to cache
 	c.mu.Lock()
 	c.allIps[domain] = ips
-	// Also update single-IP cache for backward compat
 	if len(ips) > 0 {
 		c.ips[domain] = ips[0]
 	}
+	needTrim := len(ips) > maxIPsPerDomain
 	c.mu.Unlock()
+
+	if needTrim {
+		trimDomainIPs(domain)
+	}
+	Persist.MarkDirty()
 
 	return ips, nil
 }
@@ -465,16 +471,14 @@ func parseDNSResponse(response []byte, domain string) (string, error) {
 
 
 
-// ClearCache clears DNS cache and resets last successful server index
+// ClearCache clears DNS runtime cache (used on network change).
+// NOTE: Persistent IPs (loaded from disk + accumulated via DNS) are PRESERVED.
+// We only reset the last-successful-server index to force fresh resolution.
 func ClearCache() {
-	hostCache.mu.Lock()
-	defer hostCache.mu.Unlock()
-	hostCache.ips = make(map[string]string)
-	hostCache.allIps = make(map[string][]string)
 	lastSuccessfulMu.Lock()
 	lastSuccessfulIndex = 0
 	lastSuccessfulMu.Unlock()
-	turnLog("[DNS] Cache cleared")
+	turnLog("[DNS] Cache cleared (persistent IPs preserved)")
 }
 
 

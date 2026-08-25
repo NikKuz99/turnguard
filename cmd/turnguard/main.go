@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/NikKuz99/turnguard/internal/core"
@@ -40,6 +41,7 @@ func main() {
 	genConfig := flag.Bool("gen-config", false, "Generate example config.json and exit")
 	showVersion := flag.Bool("version", false, "Show version and exit")
 	logFile := flag.String("log-file", "", "Path to log file (default: no file logging)")
+	dnsCachePath := flag.String("dns-cache", "", "Path to persistent DNS cache JSON file (default: ~/.turnguard/dns_cache.json)")
 	useWebUI := flag.Bool("webui", false, "Start web UI (open http://127.0.0.1:8080)")
 	webUIPort := flag.Int("webui-port", 8080, "Port for web UI")
 	flag.Parse()
@@ -124,6 +126,22 @@ func main() {
 		}
 		defer core.CloseFileLogging()
 	}
+
+	// Init persistent DNS cache (T10-T14: stores IP + metrics between restarts)
+	cachePath := *dnsCachePath
+	if cachePath == "" {
+		// Default: ~/.turnguard/dns_cache.json
+		if home, err := os.UserHomeDir(); err == nil {
+			cachePath = filepath.Join(home, ".turnguard", "dns_cache.json")
+			// Ensure directory exists
+			os.MkdirAll(filepath.Dir(cachePath), 0700)
+		} else {
+			// Fallback: /tmp/turnguard_dns_cache.json
+			cachePath = filepath.Join(os.TempDir(), "turnguard_dns_cache.json")
+		}
+	}
+	core.Persist.SetCachePath(cachePath)
+	defer core.Persist.Stop()
 
 	if *wrapKey != "" {
 		if err := core.SetWrapKey(*wrapKey); err != nil {
