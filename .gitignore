@@ -17,3 +17,7 @@ Thumbs.db
 
 # Config
 config.json
+gui/turnguard-gui/node_modules
+gui/turnguard-gui/src-tauri/target
+gui/turnguard-gui/dist
+gui/turnguard-gui/src-tauri/gen

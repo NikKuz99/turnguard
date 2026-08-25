@@ -1,0 +1,249 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright (C) 2026 NikKuz99. All Rights Reserved. */
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, sans-serif;
+  background: #1a1a1a;
+  color: #e0e0e0;
+  font-size: 14px;
+}
+
+.app {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 100vh;
+}
+
+.app-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid #333;
+}
+
+.app-header h1 {
+  font-size: 20px;
+  font-weight: 600;
+  color: #4a9eff;
+}
+
+.version {
+  font-size: 12px;
+  color: #888;
+  margin-left: 6px;
+  font-weight: normal;
+}
+
+.status {
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.status-stopped { background: #3a2020; color: #ff8080; }
+.status-starting { background: #3a3520; color: #ffd080; }
+.status-running { background: #203a20; color: #80ff80; }
+.status-error { background: #3a2020; color: #ff4040; }
+
+.tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+details {
+  background: #222;
+  border: 1px solid #333;
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+
+summary {
+  cursor: pointer;
+  font-weight: 500;
+  padding: 4px 0;
+  color: #4a9eff;
+  user-select: none;
+}
+
+summary:hover {
+  color: #6ab0ff;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: #999;
+}
+
+input[type="text"], input[type="number"], select {
+  background: #1a1a1a;
+  border: 1px solid #444;
+  border-radius: 4px;
+  padding: 8px 10px;
+  color: #e0e0e0;
+  font-size: 13px;
+  font-family: monospace;
+}
+
+input[type="text"]:focus, input[type="number"]:focus, select:focus {
+  outline: none;
+  border-color: #4a9eff;
+}
+
+input:disabled {
+  opacity: 0.5;
+}
+
+.row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.row label {
+  flex: 1;
+  min-width: 100px;
+}
+
+.checkbox {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px;
+}
+
+.checkbox input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.logs {
+  background: #0a0a0a;
+  border: 1px solid #333;
+  border-radius: 4px;
+  padding: 8px;
+  font-family: "SF Mono", Monaco, monospace;
+  font-size: 11px;
+  max-height: 300px;
+  overflow-y: auto;
+  margin-top: 12px;
+}
+
+.log-line {
+  padding: 2px 0;
+  border-bottom: 1px solid #1a1a1a;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: #b0b0b0;
+}
+
+.empty {
+  color: #666;
+  font-style: italic;
+  padding: 12px;
+  text-align: center;
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+  padding: 12px 0;
+  border-top: 1px solid #333;
+  border-bottom: 1px solid #333;
+}
+
+button {
+  background: #333;
+  color: #e0e0e0;
+  border: 1px solid #555;
+  border-radius: 4px;
+  padding: 8px 16px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+button:hover:not(:disabled) {
+  background: #444;
+  border-color: #777;
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+button.primary {
+  background: #2a5a2a;
+  border-color: #4a8a4a;
+}
+
+button.primary:hover:not(:disabled) {
+  background: #3a7a3a;
+}
+
+button.danger {
+  background: #5a2a2a;
+  border-color: #8a4a4a;
+}
+
+button.danger:hover:not(:disabled) {
+  background: #7a3a3a;
+}
+
+.error {
+  background: #3a2020;
+  border: 1px solid #6a3030;
+  color: #ff8080;
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.update-msg {
+  background: #203a20;
+  border: 1px solid #306a30;
+  color: #80ff80;
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: monospace;
+}
+
+.app-footer {
+  text-align: center;
+  font-size: 11px;
+  color: #666;
+  padding: 8px 0;
+}
+
+.app-footer a {
+  color: #4a9eff;
+  text-decoration: none;
+}
+
+.app-footer a:hover {
+  text-decoration: underline;
+}
