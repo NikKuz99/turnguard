@@ -17,3 +17,4 @@ Thumbs.db
 
 # Config
 config.json
+gui/turnguard-gui/src-tauri/bin/
