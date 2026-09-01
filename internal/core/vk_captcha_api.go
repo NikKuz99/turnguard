@@ -208,7 +208,22 @@ func solveVkCaptcha(ctx context.Context, captchaErr *VkCaptchaError, streamID in
 
 	bootstrap, err := fetchCaptchaBootstrap(ctx, captchaErr.RedirectURI, client, profile)
 	if err != nil {
-		return "", fmt.Errorf("failed to fetch captcha bootstrap: %w", err)
+		// VK removed powInput from HTML — try API-only flow without PoW
+		util.TurnLog("[STREAM %d] [Captcha] Bootstrap failed (%v), trying API-only flow without PoW", streamID, err)
+		hash := ""
+		emptySettings := &captchaSettingsResponse{SettingsByType: make(map[string]string)}
+		var st string
+		var err2 error
+		if useSliderPOC {
+			st, err2 = callCaptchaNotRobotWithSliderPOC(ctx, captchaErr.SessionToken, hash, streamID, client, profile, emptySettings)
+		} else {
+			st, err2 = callCaptchaNotRobot(ctx, captchaErr.SessionToken, hash, streamID, client, profile)
+		}
+		if err2 != nil {
+			return "", fmt.Errorf("bootstrap failed: %w; API-only flow also failed: %w", err, err2)
+		}
+		util.TurnLog("[STREAM %d] [Captcha] Success (API-only)! Got success_token", streamID)
+		return st, nil
 	}
 
 	util.TurnLog("[STREAM %d] [Captcha] PoW input: %s, difficulty: %d", streamID, bootstrap.PowInput, bootstrap.Difficulty)

@@ -23,7 +23,6 @@ import (
 const (
 	githubOwner = "NikKuz99"
 	githubRepo  = "turnguard"
-	checkInterval = 6 * time.Hour
 )
 
 type githubRelease struct {
@@ -171,39 +170,59 @@ func DownloadAndUpdate(downloadURL string) error {
 	return nil
 }
 
-// StartUpdateChecker runs a background goroutine that checks for updates periodically.
+// StartUpdateChecker runs a background goroutine that checks for updates.
+//
+// T15: Behavior (synced with Android Updater.kt):
+//   - First check immediately on start
+//   - On failure (no internet, etc.): silent retry every 60 seconds
+//     (no user notification, just Log)
+//   - On success (response received, even if no new version): exit the loop —
+//     do not poll GitHub again until next app launch
+//   - If new version available: download + install, then exit the loop
 func StartUpdateChecker(ctx context.Context) {
 	go func() {
-		ticker := time.NewTicker(checkInterval)
-		defer ticker.Stop()
-
-		// Check immediately on start
-		checkOnce()
+		util.TurnLog("[Updater] Update monitoring started: will check immediately, retry 60s on failure, stop on success")
 
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
-				checkOnce()
+			default:
 			}
+
+			url, version, err := CheckForUpdate()
+			if err != nil {
+				// T15: silent retry — do not notify user (likely no internet)
+				util.TurnLog("[Updater] Update check failed, retry in 60s: %v", err)
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(60 * time.Second):
+				}
+				continue
+			}
+
+			// Success — response received
+			if url == "" {
+				util.TurnLog("[Updater] Update check succeeded — no new version available (current: %s), stopping periodic check", CurrentVersion)
+				return
+			}
+
+			util.TurnLog("[Updater] New version available: %s", version)
+			if err := DownloadAndUpdate(url); err != nil {
+				util.TurnLog("[Updater] Update download failed: %v", err)
+				// Retry the whole cycle in 60s
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(60 * time.Second):
+				}
+				continue
+			}
+
+			// Update installed — exit loop (will apply on next restart)
+			util.TurnLog("[Updater] Update installed, stopping periodic check (restart to apply)")
+			return
 		}
 	}()
-}
-
-func checkOnce() {
-	url, version, err := CheckForUpdate()
-	if err != nil {
-		util.TurnLog("[Updater] Check failed: %v", err)
-		return
-	}
-	if url == "" {
-		util.TurnLog("[Updater] No updates available (current: %s)", CurrentVersion)
-		return
-	}
-
-	util.TurnLog("[Updater] New version available: %s", version)
-	if err := DownloadAndUpdate(url); err != nil {
-		util.TurnLog("[Updater] Update failed: %v", err)
-	}
 }
