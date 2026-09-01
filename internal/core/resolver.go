@@ -104,6 +104,7 @@ func (c *DnsCache) Resolve(ctx context.Context, domain string) (string, error) {
 	c.ips[domain] = ip
 	c.mu.Unlock()
 
+	Persist.MarkDirty()
 	return ip, nil
 }
 
@@ -138,6 +139,7 @@ func (c *DnsCache) ResolveAll(ctx context.Context, domain string) ([]string, err
 	}
 	c.mu.Unlock()
 
+	Persist.MarkDirty()
 	return ips, nil
 }
 

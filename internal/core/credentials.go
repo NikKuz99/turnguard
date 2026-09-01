@@ -220,12 +220,23 @@ func GetWrapKey() []byte {
 }
 
 // SetWrapKey sets the wrap key from a hex string (64 chars = 32 bytes).
+
+// knownLeakedWrapKeys is a list of wrap keys that must never be used.
+var knownLeakedWrapKeys = map[string]bool{
+	"e979270b5240918e9f3764b0daf9bd825f6d95185481926407435665b37e53ca": true,
+	"1d3e9babfd3a74f4588bf90cf5c30d3e8e89a0e2a4544da8de8bbf4d78a32f5c": true,
+	"4045edac1cb2c18eff209dc09cd5e2e56475a13ed4615413a87618b3c6813f9a": true,
+}
+
 func SetWrapKey(hexKey string) error {
 	if hexKey == "" {
 		wrapKeyMu.Lock()
 		wrapKeyBytes = nil
 		wrapKeyMu.Unlock()
 		return nil
+	}
+	if knownLeakedWrapKeys[hexKey] {
+		return fmt.Errorf("refusing to use a known-leaked default wrap key")
 	}
 	key, err := hex.DecodeString(hexKey)
 	if err != nil {

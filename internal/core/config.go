@@ -32,6 +32,8 @@ package core
 
 import (
 	"encoding/json"
+	crypto_rand "crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -186,7 +188,14 @@ func GenerateExampleConfig(path string) error {
 	cfg := DefaultConfig()
 	cfg.VKLink = "https://vk.com/call/join/your_link_here"
 	cfg.Peer = "your.server.com:56001"
-	cfg.WrapKey = "e979270b5240918e9f3764b0daf9bd825f6d95185481926407435665b37e53ca"
+
+	// Generate a fresh random 32-byte wrap key
+	wrapKey := make([]byte, 32)
+	if _, err := crypto_rand.Read(wrapKey); err != nil {
+		return fmt.Errorf("failed to generate wrap key: %w", err)
+	}
+	cfg.WrapKey = hex.EncodeToString(wrapKey)
+
 	cfg.VPN.Enabled = true
 	cfg.VPN.PrivateKey = "your_client_private_key_hex_64_chars"
 	cfg.VPN.ServerKey = "your_server_public_key_hex_64_chars"

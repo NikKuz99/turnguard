@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"log"
 	"os"
+	"runtime"
 )
 
 //go:embed certs/cacert.pem
@@ -23,8 +24,11 @@ func loadCABundle() *x509.CertPool {
 			}
 		}
 	}
-	if sys, err := x509.SystemCertPool(); err == nil && sys != nil && len(sys.Subjects()) > 0 {
-		return sys
+	if runtime.GOOS != "android" {
+		if sys, err := x509.SystemCertPool(); err == nil && sys != nil {
+			return sys
+		}
+		log.Println("CA bundle: system pool unavailable, falling back to embedded Mozilla bundle")
 	}
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(mozillaCABundlePEM) {

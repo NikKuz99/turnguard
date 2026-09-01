@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"os/signal"
 	"syscall"
 
@@ -38,6 +39,7 @@ func main() {
 	checkUpdate := flag.Bool("check-update", false, "Check for updates and exit")
 	autoUpdate := flag.Bool("auto-update", true, "Enable background update checker")
 	genConfig := flag.Bool("gen-config", false, "Generate example config.json and exit")
+	dnsCachePath := flag.String("dns-cache", "", "Path to persistent DNS cache JSON file (handled by GUI)")
 	showVersion := flag.Bool("version", false, "Show version and exit")
 	logFile := flag.String("log-file", "", "Path to log file (default: no file logging)")
 	useWebUI := flag.Bool("webui", false, "Start web UI (open http://127.0.0.1:8080)")
@@ -118,6 +120,19 @@ func main() {
 	}
 
 	// Init file logging if requested
+	if *dnsCachePath != "" {
+		core.Persist.SetCachePath(*dnsCachePath)
+		defer core.Persist.Stop()
+	} else {
+		// Default: ~/.turnguard/dns_cache.json
+		if home, err := os.UserHomeDir(); err == nil {
+			defaultPath := filepath.Join(home, ".turnguard", "dns_cache.json")
+			os.MkdirAll(filepath.Dir(defaultPath), 0700)
+			core.Persist.SetCachePath(defaultPath)
+			defer core.Persist.Stop()
+		}
+	}
+
 	if *logFile != "" {
 		if err := core.InitFileLogging(*logFile); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: file logging failed: %v\n", err)

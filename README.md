@@ -28,7 +28,7 @@ chmod +x turnguard-linux-amd64
 ./turnguard \
   -vk-link https://vk.com/call/join/... \
   -peer your.server.com:56001 \
-  -wrap-key e979270b5240918e9f3764b0daf9bd825f6d95185481926407435665b37e53ca
+  -wrap-key <generate with: openssl rand -hex 32>
 
 # Standalone VPN (TUN + WireGuard built-in, requires root on Linux)
 sudo ./turnguard \
