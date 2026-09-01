@@ -576,6 +576,82 @@ fn base64_to_hex(base64_str: &str) -> String {
 }
 
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Update checker (T15: check on start, notify GUI)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateInfo {
+    pub available: bool,
+    pub current_version: String,
+    pub latest_version: String,
+    pub download_url: String,
+    pub download_size: i64,
+    pub release_notes: String,
+}
+
+#[tauri::command]
+fn check_for_gui_update() -> Result<UpdateInfo, String> {
+    let url = format!("https://api.github.com/repos/{}/releases/latest", "NikKuz99/turnguard");
+
+    let resp = reqwest::blocking::get(&url)
+        .map_err(|e| format!("failed to check updates: {}", e))?;
+
+    if resp.status() != 200 {
+        return Err(format!("GitHub API returned {}", resp.status()));
+    }
+
+    let body: serde_json::Value = resp.json()
+        .map_err(|e| format!("failed to parse release: {}", e))?;
+
+    let latest = body["tag_name"].as_str().unwrap_or("");
+    let current = env!("CARGO_PKG_VERSION");
+    let current_tag = format!("v{}", current);
+
+    let download_url = String::new();
+    let download_size: i64 = 0;
+
+    // Find the right asset
+    let asset_name = if cfg!(windows) {
+        "TurnGuard_{}_x64-setup.exe"
+    } else {
+        "TurnGuard_{}_amd64.deb"
+    };
+
+    let mut found_url = String::new();
+    let mut found_size: i64 = 0;
+
+    if let Some(assets) = body["assets"].as_array() {
+        for asset in assets {
+            let name = asset["name"].as_str().unwrap_or("");
+            // Match any version pattern
+            if (cfg!(windows) && name.ends_with("_x64-setup.exe"))
+                || (!cfg!(windows) && name.ends_with("_amd64.deb"))
+                || (!cfg!(windows) && name.ends_with("_amd64.AppImage"))
+            {
+                found_url = asset["browser_download_url"].as_str().unwrap_or("").to_string();
+                found_size = asset["size"].as_i64().unwrap_or(0);
+                break;
+            }
+        }
+    }
+
+    let release_notes = body["body"].as_str().unwrap_or("").to_string();
+
+    let available = !latest.is_empty() && latest != current_tag;
+
+    Ok(UpdateInfo {
+        available,
+        current_version: current_tag,
+        latest_version: latest.to_string(),
+        download_url: found_url,
+        download_size: found_size,
+        release_notes,
+    })
+}
+
+
 // ─────────────────────────────────────────────────────────────────────────────
 // App entry point
 // ─────────────────────────────────────────────────────────────────────────────
@@ -600,6 +676,7 @@ pub fn run() {
             check_update,
             get_version,
             import_tunnel,
+            check_for_gui_update,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {

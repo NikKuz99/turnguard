@@ -32,6 +32,15 @@ interface AppConfig {
   auto_update: boolean;
 }
 
+interface UpdateInfo {
+  available: boolean;
+  current_version: string;
+  latest_version: string;
+  download_url: string;
+  download_size: number;
+  release_notes: string;
+}
+
 interface Tunnel {
   name: string;
   config: AppConfig;
@@ -69,6 +78,7 @@ function App() {
   const [logs, setLogs] = useState<string[]>([]);
   const [version, setVersion] = useState("");
   const [updateMsg, setUpdateMsg] = useState("");
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const logsEndRef = useRef<HTMLDivElement>(null);
@@ -76,6 +86,15 @@ function App() {
   useEffect(() => {
     refreshTunnels();
     invoke<string>("get_version").then(setVersion).catch(() => {});
+
+    // Auto-check for updates on start (T15)
+    invoke<UpdateInfo>("check_for_gui_update")
+      .then((info) => {
+        if (info.available) {
+          setUpdateInfo(info);
+        }
+      })
+      .catch((e) => console.warn("Update check failed:", e));
     invoke<boolean>("get_status").then(setRunning).catch(() => {});
     invoke<string>("get_active_tunnel").then(setActiveTunnel).catch(() => {});
   }, []);
@@ -161,8 +180,16 @@ function App() {
 
   const handleCheckUpdate = async () => {
     setUpdateMsg("Checking...");
-    try { setUpdateMsg(await invoke<string>("check_update")); }
-    catch (e) { setUpdateMsg("Error: " + String(e)); }
+    try {
+      const info = await invoke<UpdateInfo>("check_for_gui_update");
+      if (info.available) {
+        setUpdateInfo(info);
+        setUpdateMsg("");
+      } else {
+        setUpdateMsg("You are using the latest version (" + info.current_version + ")");
+        setUpdateInfo(null);
+      }
+    } catch (e) { setUpdateMsg("Error: " + String(e)); }
   };
 
   return (
@@ -195,6 +222,19 @@ function App() {
         <div className="error-banner">
           <span>{error}</span>
           <button onClick={() => setError("")}>&times;</button>
+        </div>
+      )}
+
+      {updateInfo && (
+        <div className="update-banner">
+          <div className="update-banner-info">
+            <strong>Update available: {updateInfo.latest_version}</strong>
+            <span>You are using {updateInfo.current_version}</span>
+          </div>
+          <a href={updateInfo.download_url} target="_blank" rel="noopener noreferrer" className="update-download-btn">
+            Download
+          </a>
+          <button onClick={() => setUpdateInfo(null)}>&times;</button>
         </div>
       )}
 

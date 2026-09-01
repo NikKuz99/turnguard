@@ -526,3 +526,56 @@ html, body {
   gap: 12px;
   margin-top: 8px;
 }
+
+/* ─── Update Banner ─── */
+.update-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 24px;
+  background: var(--md-primary-container);
+  color: var(--md-on-primary-container);
+  font-size: 13px;
+  border-bottom: 1px solid var(--md-outline-variant);
+}
+
+.update-banner-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+
+.update-banner-info span {
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+.update-download-btn {
+  background: var(--md-primary);
+  color: var(--md-on-primary);
+  padding: 6px 16px;
+  border-radius: 16px;
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 500;
+  transition: background 0.15s;
+}
+
+.update-download-btn:hover {
+  background: #BDD4FF;
+}
+
+.update-banner button {
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 20px;
+  cursor: pointer;
+  padding: 0 4px;
+  opacity: 0.6;
+}
+
+.update-banner button:hover {
+  opacity: 1;
+}
