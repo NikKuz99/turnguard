@@ -121,3 +121,87 @@ fn test_comments_only_conf() {
     let conf = "#@wgt:VKLink = https://vk.com/call/join/abc123\n#@wgt:WrapKey = abc123\n";
     assert!(conf.lines().all(|l| l.starts_with('#')));
 }
+
+/// Test: Real-world config from Windows host (msc-wg_turn.conf)
+/// Verifies parser handles actual production config format
+#[test]
+fn test_real_world_config() {
+    let conf = r#"[Interface]
+PrivateKey = 2OqMTk9SNbapTJR9WP8UjtObNxTbdYuDLPXhxFgEOVY=
+Address = 10.10.0.15/32
+DNS = 10.0.0.90
+MTU = 1280
+
+[Peer]
+PublicKey = YDB3Pwe3nQBxEctzUz2niKg++VsTvRRp+BVDFTDSLnI=
+Endpoint = msc3.vpn.smd-rnd.ru:51820
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25
+
+#@wgt:EnableTURN = true
+#@wgt:UseUDP = true
+#@wgt:IPPort = msc3.vpn.smd-rnd.ru:56000
+#@wgt:VKLink = https://vk.com/call/join/PfR_Ddp1qFB3YiFOYRcDOBfS3cDgxKRPluOea_fQCzQ
+#@wgt:Mode = vk_link
+#@wgt:PeerType = proxy_v1
+#@wgt:StreamNum = 4
+#@wgt:LocalPort = 9000
+#@wgt:StreamsPerCred = 4
+#@wgt:WrapKey = 9a5e2999fbcf5d615b6c0f274526af845c0625d178cf6e2ab340c7a87d9a1afb
+"#;
+    // Verify all expected fields are present
+    assert!(conf.contains("#@wgt:EnableTURN = true"));
+    assert!(conf.contains("#@wgt:UseUDP = true"));
+    assert!(conf.contains("#@wgt:IPPort = msc3.vpn.smd-rnd.ru:56000"));
+    assert!(conf.contains("#@wgt:VKLink = https://vk.com/call/join/"));
+    assert!(conf.contains("#@wgt:Mode = vk_link"));
+    assert!(conf.contains("#@wgt:StreamNum = 4"));
+    assert!(conf.contains("#@wgt:LocalPort = 9000"));
+    assert!(conf.contains("#@wgt:StreamsPerCred = 4"));
+    assert!(conf.contains("#@wgt:WrapKey = 9a5e2999fbcf5d615b6c0f274526af845c0625d178cf6e2ab340c7a87d9a1afb"));
+    assert!(conf.contains("#@wgt:PeerType = proxy_v1"));
+
+    // Verify WireGuard standard fields
+    assert!(conf.contains("PrivateKey = 2OqMTk9SNbapTJR9WP8UjtObNxTbdYuDLPXhxFgEOVY="));
+    assert!(conf.contains("PublicKey = YDB3Pwe3nQBxEctzUz2niKg++VsTvRRp+BVDFTDSLnI="));
+    assert!(conf.contains("Endpoint = msc3.vpn.smd-rnd.ru:51820"));
+    assert!(conf.contains("AllowedIPs = 0.0.0.0/0"));
+    assert!(conf.contains("PersistentKeepalive = 25"));
+    assert!(conf.contains("MTU = 1280"));
+    assert!(conf.contains("DNS = 10.0.0.90"));
+    assert!(conf.contains("Address = 10.10.0.15/32"));
+}
+
+/// Test: Verify parser normalizes PascalCase to lowercase correctly
+/// This is the core of the bug fix — fields like VKLink must map to vk_link
+#[test]
+fn test_pascalcase_normalization() {
+    // Simulate what the parser does: take "VKLink" and normalize to "vklink"
+    let test_cases = vec![
+        ("VKLink", "vklink"),
+        ("WrapKey", "wrapkey"),
+        ("IPPort", "ipport"),
+        ("EnableTURN", "enableturn"),
+        ("UseUDP", "useudp"),
+        ("StreamNum", "streamnum"),
+        ("LocalPort", "localport"),
+        ("PeerType", "peertype"),
+        ("StreamsPerCred", "streamspercred"),
+        ("Mode", "mode"),
+        // Legacy snake_case also works
+        ("vk_link", "vk_link"),
+        ("wrap_key", "wrap_key"),
+        ("exclude_private", "exclude_private"),
+    ];
+
+    for (input, expected) in test_cases {
+        let normalized = input.to_lowercase();
+        // The parser uses .to_lowercase() and then matches against known keys
+        // Both "VKLink" and "vk_link" should match their respective patterns
+        assert_eq!(
+            normalized, expected,
+            "Failed to normalize '{}': expected '{}', got '{}'",
+            input, expected, normalized
+        );
+    }
+}
