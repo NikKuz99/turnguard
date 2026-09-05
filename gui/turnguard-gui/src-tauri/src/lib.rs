@@ -442,6 +442,15 @@ fn import_tunnel(app: tauri::AppHandle, path: String) -> Result<Vec<Tunnel>, Str
         }
     }
 
+    // Save each imported tunnel to disk so they persist
+    let dir = tunnels_dir(&app).ok_or("no app data dir")?;
+    for tunnel in &tunnels {
+        let safe_name = sanitize_name(&tunnel.name);
+        let tunnel_path = dir.join(format!("{}.json", safe_name));
+        let data = serde_json::to_string_pretty(tunnel).map_err(|e| e.to_string())?;
+        fs::write(&tunnel_path, data).map_err(|e| e.to_string())?;
+    }
+
     Ok(tunnels)
 }
 
@@ -712,18 +721,82 @@ fn version_gt(a: &str, b: &str) -> bool {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// System tray icon setup
+// ─────────────────────────────────────────────────────────────────────────────
+
+use tauri::tray::{TrayIconBuilder, MouseButton, MouseButtonState, TrayIconEvent};
+use tauri::menu::{Menu, MenuItem};
+
+/// Set up the system tray icon with menu and click handler.
+/// Call this from the Tauri setup hook.
+fn setup_tray_icon(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    let show_item = MenuItem::with_id(app, "show", "Show TurnGuard", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+
+    let _tray = TrayIconBuilder::with_id("main")
+        .icon(app.default_window_icon().unwrap().clone())
+        .tooltip("TurnGuard")
+        .menu(&menu)
+        .menu_on_left_click(false)
+        .on_menu_event(|app, event| {
+            match event.id.as_ref() {
+                "show" => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+                "quit" => {
+                    // Kill tunnel and quit
+                    let state: State<ProxyState> = app.state();
+                    stop_tunnel_internal(&state);
+                    app.exit(0);
+                }
+                _ => {}
+            }
+        })
+        .on_tray_icon_event(|tray, event| {
+            // Double-click (or single click on some platforms) shows the window
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                let app = tray.app_handle();
+                if let Some(window) = app.get_webview_window("main") {
+                    if window.is_visible().unwrap_or(false) {
+                        let _ = window.hide();
+                    } else {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+            }
+        })
+        .build(app)?;
+
+    Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // App entry point
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .setup(|app| {
+            setup_tray_icon(app.handle())?;
+            Ok(())
+        })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
-                .manage(ProxyState::default())
+        .manage(ProxyState::default())
         .invoke_handler(tauri::generate_handler![
             list_tunnels,
             save_tunnel,
@@ -736,17 +809,38 @@ pub fn run() {
             get_version,
             import_tunnel,
             check_for_gui_update,
+            show_window,
+            quit_app,
         ])
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
-                let state: State<ProxyState> = window.state();
-                let child_opt = state.child.lock().unwrap().take();
-                if let Some(mut child) = child_opt {
-                    let _ = child.kill();
-                    let _ = child.wait();
+            // Close-to-tray: intercept close request, hide window instead
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                #[cfg(not(target_os = "macos"))]
+                {
+                    window.hide().unwrap_or(());
+                    api.prevent_close();
                 }
             }
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// Show the main window (called from tray icon click)
+#[tauri::command]
+fn show_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        window.show().map_err(|e| e.to_string())?;
+        window.set_focus().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Quit the application (called from tray menu)
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle, state: State<'_, ProxyState>) -> Result<(), String> {
+    // Kill any running tunnel
+    stop_tunnel_internal(&state);
+    app.exit(0);
+    Ok(())
 }
