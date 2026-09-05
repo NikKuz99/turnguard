@@ -314,9 +314,13 @@ def test_frontend_build():
 def test_frontend_import_tunnel():
     """Frontend calls save_tunnel after import_tunnel (or Rust saves)."""
     r = TestResult("frontend_import_tunnel", "frontend")
-    # Check that Rust import_tunnel saves to disk
-    code, out, _ = run_cmd(f"grep -A5 'fn import_tunnel' {REPO}/gui/turnguard-gui/src-tauri/src/lib.rs | grep -c 'fs::write'")
-    r.passed = code == 0 and int(out.strip()) >= 1
+    # Check that Rust import_tunnel saves to disk (search whole function, not just -A5)
+    code, out, _ = run_cmd(
+        f"awk '/fn import_tunnel/,/^}}/' {REPO}/gui/turnguard-gui/src-tauri/src/lib.rs | grep -c 'fs::write'"
+    )
+    # grep -c returns exit 1 when count is 0, so check output not exit code
+    count = int(out.strip()) if out.strip().isdigit() else 0
+    r.passed = count >= 1
     r.message = "import_tunnel saves to disk" if r.passed else "import_tunnel does NOT save (bug!)"
     return r
 
@@ -366,9 +370,10 @@ def test_release_has_exe():
 def test_no_bak_files():
     """No .bak files in git (should not be committed)."""
     r = TestResult("no_bak_files", "release")
-    code, out, _ = run_cmd(f"cd {REPO} && git status --short | grep -c '\\.bak'")
-    r.passed = code == 0 and int(out.strip()) == 0
-    r.message = "No .bak files" if r.passed else f"Found {out.strip()} .bak files"
+    code, out, _ = run_cmd(f"cd {REPO} && git status --short | grep -c '\\.bak' || true")
+    count = int(out.strip()) if out.strip().isdigit() else 0
+    r.passed = count == 0
+    r.message = "No .bak files" if r.passed else f"Found {count} .bak files"
     return r
 
 
