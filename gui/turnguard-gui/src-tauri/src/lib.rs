@@ -471,27 +471,71 @@ fn parse_conf_content(content: &str, name: &str) -> Result<Tunnel, String> {
     let mut keepalive: i32 = 25;
     let mut listen_port: i32 = 9000;
     let mut exclude_private = false;
+    let mut udp = false;
+    let mut mode = "vk_link".to_string();
+    let mut streams: i32 = 4;
 
     for line in content.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
-            // Parse TURN-specific comments: #turn.vk_link = ...
-            // Also support Android export format: #@wgt:vk_link=...
-            if line.starts_with("#turn.") || line.starts_with("#@wgt:") {
-                let comment_content = if line.starts_with("#turn.") {
-                    &line[6..]
-                } else {
-                    &line[6..]
-                };
-                if let Some(eq_pos) = comment_content.find('=') {
-                    let key = comment_content[..eq_pos].trim();
-                    let value = comment_content[eq_pos + 1..].trim();
-                    match key {
-                        "vk_link" | "vk-link" => vk_link = value.to_string(),
-                        "peer" => peer = value.to_string(),
-                        "wrap_key" | "wrap-key" => wrap_key = value.to_string(),
-                        "exclude_private" | "exclude-private" => {
+            // Parse TURN-specific comments.
+            // Two formats supported:
+            //   1. Legacy:    #turn.vk_link = value        (snake_case, spaces around =)
+            //   2. Android:   #@wgt:VKLink = value         (PascalCase, spaces around =)
+            // Also handle no-space variant: #@wgt:VKLink=value
+            let comment_content = if line.starts_with("#turn.") {
+                Some(&line["#turn.".len()..])
+            } else if line.starts_with("#@wgt:") {
+                Some(&line["#@wgt:".len()..])
+            } else {
+                None
+            };
+
+            if let Some(content) = comment_content {
+                if let Some(eq_pos) = content.find('=') {
+                    let key = content[..eq_pos].trim().to_lowercase();
+                    let value = content[eq_pos + 1..].trim();
+                    // Match all known field names (both snake_case and PascalCase)
+                    match key.as_str() {
+                        "vk_link" | "vk-link" | "vklink" => vk_link = value.to_string(),
+                        "peer" | "ipport" => peer = value.to_string(),
+                        "wrap_key" | "wrap-key" | "wrapkey" => wrap_key = value.to_string(),
+                        "exclude_private" | "exclude-private" | "excludeprivate" => {
                             exclude_private = value == "true" || value == "1";
+                        }
+                        "enableturn" => {
+                            // enableturn = false → don't change defaults
+                        }
+                        "useudp" => {
+                            udp = value == "true" || value == "1";
+                        }
+                        "mode" => {
+                            mode = value.to_string();
+                        }
+                        "streamnum" | "streams" => {
+                            streams = value.parse().unwrap_or(4);
+                        }
+                        "localport" => {
+                            listen_port = value.parse().unwrap_or(9000);
+                        }
+                        "peertype" => {
+                            // Ignored — peer type selector removed in v0.6.0
+                        }
+                        "streamspercred" => {
+                            // Ignored — not used in desktop client
+                        }
+                        "turnip" => {
+                            // Override server_addr if TurnIP specified
+                            if !value.is_empty() {
+                                server_addr = value.to_string();
+                            }
+                        }
+                        "turnport" => {
+                            // Append port to turnip if both present
+                            // (handled below after loop if server_addr is just IP)
+                        }
+                        "watchdogtimeout" => {
+                            // Ignored — desktop client doesn't have watchdog (yet)
                         }
                         _ => {}
                     }
@@ -541,9 +585,9 @@ fn parse_conf_content(content: &str, name: &str) -> Result<Tunnel, String> {
             vk_link,
             peer,
             wrap_key,
-            streams: 4,
-            udp: false,
-            mode: "vk_link".to_string(),
+            streams,
+            udp,
+            mode,
             vpn: true,
             private_key,
             server_key,
