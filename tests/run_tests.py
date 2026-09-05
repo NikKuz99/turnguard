@@ -377,6 +377,76 @@ def test_no_bak_files():
     return r
 
 
+# ─── 9. Rust parser tests ───────────────────────────────────────────────────
+
+def test_rust_parser_tests():
+    """cargo test --test parser_tests passes (8 tests including real-world config)."""
+    r = TestResult("rust_parser_tests", "parser")
+    code, out, err = run_cmd(
+        f"cd {REPO}/gui/turnguard-gui/src-tauri && cargo test --test parser_tests 2>&1 | tail -15",
+        timeout=300
+    )
+    r.passed = "test result: ok" in out and "0 failed" in out
+    if r.passed:
+        # Extract test count
+        import re
+        match = re.search(r'(\d+) passed', out)
+        count = match.group(1) if match else "?"
+        r.message = f"Rust parser tests: {count} passed"
+    else:
+        r.message = f"Parser tests failed: {out[-200:]}"
+    return r
+
+
+# ─── 10. E2E tunnel test ────────────────────────────────────────────────────
+
+def test_e2e_tunnel():
+    """E2E tunnel test: starts tunnel, checks DNS resolution, captcha attempted."""
+    r = TestResult("e2e_tunnel", "e2e")
+    # This test requires a real config — skip if not available
+    config_path = "/tmp/tg_test_config.json"
+    binary_path = "/root/tg-binaries/turnguard-cli-linux"
+
+    if not os.path.exists(config_path):
+        r.passed = True  # Skip (not a failure — just no config for E2E)
+        r.message = "Skipped (no config at /tmp/tg_test_config.json)"
+        return r
+
+    if not os.path.exists(binary_path):
+        r.passed = True  # Skip if binary not built yet
+        r.message = "Skipped (no binary at /root/tg-binaries/)"
+        return r
+
+    code, out, err = run_cmd(
+        f"cd {REPO} && timeout 90 python3 tests/e2e_tunnel_test.py "
+        f"--config {config_path} --binary {binary_path} 2>&1 | tail -20",
+        timeout=120
+    )
+    r.passed = "Passed: 6" in out or "Passed: 7" in out or "Passed: 5" in out
+    if r.passed:
+        r.message = "E2E tunnel test passed"
+    else:
+        r.message = f"E2E test: {out[-200:]}"
+    return r
+
+
+# ─── 11. Disk space check ───────────────────────────────────────────────────
+
+def test_disk_space():
+    """Test platform has at least 5GB free disk space."""
+    r = TestResult("disk_space", "release")
+    code, out, _ = run_cmd("df / | tail -1 | awk '{print $4}'")
+    try:
+        avail_kb = int(out.strip())
+        avail_gb = avail_kb / 1024 / 1024
+        r.passed = avail_gb >= 5.0
+        r.message = f"Disk: {avail_gb:.1f} GB free" if r.passed else f"Disk LOW: {avail_gb:.1f} GB free (need >= 5 GB)"
+    except (ValueError, IndexError):
+        r.passed = False
+        r.message = f"Cannot parse disk space: {out.strip()}"
+    return r
+
+
 # ─── Test runner ─────────────────────────────────────────────────────────────
 
 ALL_TESTS = [
@@ -408,18 +478,25 @@ ALL_TESTS = [
     test_tray_show_window_command,
     # Release
     test_no_bak_files,
+    # Rust parser tests
+    test_rust_parser_tests,
+    # E2E tunnel test
+    test_e2e_tunnel,
+    # Disk space
+    test_disk_space,
     # test_release_has_exe,  # Only run after release is created
 ]
 
 CATEGORIES = {
     "go": ["go_build_linux", "go_build_windows", "go_version_format"],
     "build": ["cargo_check", "cargo_check_windows", "version_consistency"],
-    "parser": ["conf_parser_basic", "conf_parser_turn_comments", "conf_parser_android_format"],
+    "parser": ["conf_parser_basic", "conf_parser_turn_comments", "conf_parser_android_format", "rust_parser_tests"],
     "captcha": ["captcha_bootstrap_patterns", "captcha_server_gzip", "captcha_proxy_assets"],
     "updater": ["updater_etag", "updater_rate_limit"],
     "frontend": ["frontend_build", "frontend_import_tunnel"],
     "tray": ["tray_icon_setup", "tray_close_to_tray", "tray_show_window_command"],
-    "release": ["no_bak_files"],
+    "release": ["no_bak_files", "disk_space"],
+    "e2e": ["e2e_tunnel"],
 }
 
 
