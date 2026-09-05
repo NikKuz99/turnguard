@@ -8,7 +8,7 @@
  *
  * Flow:
  * 1. Start local HTTP server on random port
- * 2. Proxy VK captcha page (with proper gzip handling)
+ * 2. Proxy VK captcha page (with proper gzip handling + asset proxying)
  * 3. Inject JS to capture success_token
  * 4. Open browser with local URL
  * 5. User solves captcha in browser
@@ -18,187 +18,199 @@
 package core
 
 import (
-        "bytes"
-        "compress/gzip"
-        "compress/zlib"
-        "context"
-        "fmt"
-        "io"
-        "net"
-        "net/http"
-        "net/http/httputil"
-        "net/url"
-        "strings"
-        "time"
+	"bytes"
+	"compress/gzip"
+	"compress/zlib"
+	"context"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"strings"
+	"time"
 
-        "github.com/NikKuz99/turnguard/internal/util"
+	"github.com/NikKuz99/turnguard/internal/util"
 )
 
 // SolveCaptchaWithProxy starts a local HTTP proxy that:
-// 1. Proxies VK captcha page
+// 1. Proxies VK captcha page AND all its assets (JS/CSS/images/XHR)
 // 2. Injects JS to intercept success_token
 // 3. Opens browser
-
 func SolveCaptchaWithProxy(redirectURI string) string {
-        util.TurnLog("[Captcha] Starting local proxy for captcha solving...")
+	util.TurnLog("[Captcha] Starting local proxy for captcha solving...")
 
-        // Parse the redirect URI to get VK host
-        vkURL, err := url.Parse(redirectURI)
-        if err != nil {
-                util.TurnLog("[Captcha] Failed to parse URI: %v", err)
-                return SolveCaptchaBrowserStdin(redirectURI)
-        }
+	// Parse the redirect URI to get VK host
+	vkURL, err := url.Parse(redirectURI)
+	if err != nil {
+		util.TurnLog("[Captcha] Failed to parse URI: %v", err)
+		return SolveCaptchaBrowserStdin(redirectURI)
+	}
 
-        // Start local HTTP server
-        ln, err := net.Listen("tcp", "127.0.0.1:0")
-        if err != nil {
-                util.TurnLog("[Captcha] Failed to listen: %v", err)
-                return SolveCaptchaBrowserStdin(redirectURI)
-        }
-        port := ln.Addr().(*net.TCPAddr).Port
-        util.TurnLog("[Captcha] Local proxy on port %d", port)
+	// Start local HTTP server
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		util.TurnLog("[Captcha] Failed to listen: %v", err)
+		return SolveCaptchaBrowserStdin(redirectURI)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	util.TurnLog("[Captcha] Local proxy on port %d", port)
 
-        tokenChan := make(chan string, 1)
+	tokenChan := make(chan string, 1)
 
-        // Create reverse proxy to VK
-        targetURL := fmt.Sprintf("https://%s", vkURL.Host)
-        target, _ := url.Parse(targetURL)
+	// The captcha page URL path — used to identify the "main" request
+	captchaPath := vkURL.Path
+	captchaQuery := vkURL.RawQuery
+	vkHost := vkURL.Host
 
-        proxy := httputil.NewSingleHostReverseProxy(target)
+	// Create reverse proxy to VK
+	targetURL := fmt.Sprintf("https://%s", vkHost)
+	target, _ := url.Parse(targetURL)
 
-        // Modify request: set proper Host/Path/Query, strip Accept-Encoding
-        // so that Transport auto-decompresses gzipped responses.
-        // (When Accept-Encoding is set explicitly by the client, Go's Transport
-        //  returns the raw gzipped body without decompression, which breaks
-        //  the responseRecorder/body injection below.)
-        originalDirector := proxy.Director
-        proxy.Director = func(req *http.Request) {
-                originalDirector(req)
-                req.Host = vkURL.Host
-                req.URL.Path = vkURL.Path
-                req.URL.RawQuery = vkURL.RawQuery
-                // Remove Accept-Encoding so http.Transport auto-decompresses gzip/deflate.
-                // This is critical: otherwise VK returns gzipped HTML and we'd have to
-                // decompress manually. With this, Transport decompresses for us and
-                // strips Content-Encoding/Content-Length from the response.
-                req.Header.Del("Accept-Encoding")
-        }
+	proxy := httputil.NewSingleHostReverseProxy(target)
 
-        // Custom transport to handle TLS
-        transport := &http.Transport{
-                DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-                        // Always connect to VK host
-                        return net.Dial(network, vkURL.Host+":443")
-                },
-                // DisableCompression = false (default) → Transport auto-adds
-                // "Accept-Encoding: gzip" and auto-decompresses responses when
-                // the request didn't have Accept-Encoding set explicitly.
-                // We've already removed Accept-Encoding in the Director, so this works.
-                DisableCompression: false,
-        }
-        proxy.Transport = transport
+	// Modify request:
+	// - Set proper Host
+	// - For the INITIAL request (browser navigating to our local proxy root),
+	//   rewrite to the captcha page path+query
+	// - For SUBSEQUENT requests (assets, XHR, etc.), pass through the path as-is
+	//   so that JS/CSS/images load correctly from their original paths
+	// - Strip Accept-Encoding so Transport auto-decompresses
+	originalDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		originalDirector(req)
+		req.Host = vkHost
 
-        // Use ModifyResponse to also handle any remaining edge cases where
-        // Content-Encoding is still set (e.g., brotli-encoded responses, which
-        // Go's Transport does NOT auto-decompress).
-        proxy.ModifyResponse = func(resp *http.Response) error {
-                encoding := strings.ToLower(resp.Header.Get("Content-Encoding"))
-                if encoding == "" {
-                        return nil
-                }
+		// Only rewrite path for the initial navigation request (root path "/")
+		// or when the browser requests the exact captcha path.
+		// All other requests (JS, CSS, images, XHR) should use their own paths.
+		if req.URL.Path == "/" || req.URL.Path == "" {
+			req.URL.Path = captchaPath
+			req.URL.RawQuery = captchaQuery
+		}
 
-                // Only attempt decompression for content types we care about
-                ct := strings.ToLower(resp.Header.Get("Content-Type"))
-                if !strings.Contains(ct, "text/html") &&
-                        !strings.Contains(ct, "application/javascript") &&
-                        !strings.Contains(ct, "text/javascript") &&
-                        !strings.Contains(ct, "application/json") &&
-                        !strings.Contains(ct, "text/css") {
-                        return nil
-                }
+		// Remove Accept-Encoding so http.Transport auto-decompresses gzip/deflate.
+		req.Header.Del("Accept-Encoding")
 
-                switch encoding {
-                case "gzip":
-                        gr, err := gzip.NewReader(resp.Body)
-                        if err != nil {
-                                util.TurnLog("[Captcha] gzip reader init failed: %v", err)
-                                return nil
-                        }
-                        resp.Body = &readClose{Reader: gr, Closer: resp.Body}
-                        resp.Header.Del("Content-Encoding")
-                        resp.Header.Del("Content-Length")
-                        resp.Uncompressed = true
-                case "deflate":
-                        zr, err := zlib.NewReader(resp.Body)
-                        if err != nil {
-                                util.TurnLog("[Captcha] zlib reader init failed: %v", err)
-                                return nil
-                        }
-                        resp.Body = &readClose{Reader: zr, Closer: resp.Body}
-                        resp.Header.Del("Content-Encoding")
-                        resp.Header.Del("Content-Length")
-                        resp.Uncompressed = true
-                default:
-                        // Unknown encoding (e.g., br / zstd): leave as-is.
-                        // Transport will return raw bytes; if HTML body looks binary,
-                        // our injection handler will skip injection but still pass bytes
-                        // through — the browser will likely show garbled text.
-                        util.TurnLog("[Captcha] Unsupported Content-Encoding: %s (will pass through)", encoding)
-                }
-                return nil
-        }
+		// Fix Referer header: browser sends http://127.0.0.1:PORT/ as referer
+		// but VK expects https://vkhost/...
+		referer := req.Header.Get("Referer")
+		if strings.Contains(referer, "127.0.0.1") {
+			req.Header.Set("Referer", fmt.Sprintf("https://%s/", vkHost))
+		}
 
-        // Wrap to inject JS into HTML responses
-        handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-                // Check if this is the callback from our injected JS
-                if r.URL.Path == "/captcha_callback" {
-                        token := r.URL.Query().Get("token")
-                        if token != "" {
-                                w.WriteHeader(200)
-                                w.Write([]byte("OK"))
-                                select {
-                                case tokenChan <- token:
-                                default:
-                                }
-                                return
-                        }
-                        w.WriteHeader(400)
-                        return
-                }
+		// Fix Origin header similarly
+		origin := req.Header.Get("Origin")
+		if strings.Contains(origin, "127.0.0.1") {
+			req.Header.Set("Origin", fmt.Sprintf("https://%s", vkHost))
+		}
+	}
 
-                // Proxy the request
-                // Capture response to inject JS if HTML
-                recorder := &responseRecorder{header: make(http.Header), statusCode: 200}
-                proxy.ServeHTTP(recorder, r)
+	// Custom transport: always connect to the VK host on port 443
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return net.Dial(network, vkHost+":443")
+		},
+		DisableCompression: false,
+	}
+	proxy.Transport = transport
 
-                contentType := recorder.header.Get("Content-Type")
-                contentEncoding := strings.ToLower(recorder.header.Get("Content-Encoding"))
+	// Handle gzip/deflate decompression in ModifyResponse
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		encoding := strings.ToLower(resp.Header.Get("Content-Encoding"))
+		if encoding == "" {
+			return nil
+		}
 
-                // If body is still encoded (e.g., Transport couldn't decompress),
-                // try one more time to decompress based on Content-Encoding.
-                bodyBytes := recorder.body.Bytes()
-                if contentEncoding == "gzip" {
-                        if gr, err := gzip.NewReader(bytes.NewReader(bodyBytes)); err == nil {
-                                if decoded, err := io.ReadAll(gr); err == nil {
-                                        bodyBytes = decoded
-                                        gr.Close()
-                                }
-                        }
-                        contentEncoding = ""
-                } else if contentEncoding == "deflate" {
-                        if zr, err := zlib.NewReader(bytes.NewReader(bodyBytes)); err == nil {
-                                if decoded, err := io.ReadAll(zr); err == nil {
-                                        bodyBytes = decoded
-                                }
-                                zr.Close()
-                        }
-                        contentEncoding = ""
-                }
+		ct := strings.ToLower(resp.Header.Get("Content-Type"))
+		if !strings.Contains(ct, "text/html") &&
+			!strings.Contains(ct, "application/javascript") &&
+			!strings.Contains(ct, "text/javascript") &&
+			!strings.Contains(ct, "application/json") &&
+			!strings.Contains(ct, "text/css") {
+			return nil
+		}
 
-                if strings.Contains(contentType, "text/html") {
-                        // Inject JS to intercept captcha success
-                        body := string(bodyBytes)
-                        injectedJS := fmt.Sprintf(`
+		switch encoding {
+		case "gzip":
+			gr, err := gzip.NewReader(resp.Body)
+			if err != nil {
+				util.TurnLog("[Captcha] gzip reader init failed: %v", err)
+				return nil
+			}
+			resp.Body = &readClose{Reader: gr, Closer: resp.Body}
+			resp.Header.Del("Content-Encoding")
+			resp.Header.Del("Content-Length")
+			resp.Uncompressed = true
+		case "deflate":
+			zr, err := zlib.NewReader(resp.Body)
+			if err != nil {
+				util.TurnLog("[Captcha] zlib reader init failed: %v", err)
+				return nil
+			}
+			resp.Body = &readClose{Reader: zr, Closer: resp.Body}
+			resp.Header.Del("Content-Encoding")
+			resp.Header.Del("Content-Length")
+			resp.Uncompressed = true
+		default:
+			util.TurnLog("[Captcha] Unsupported Content-Encoding: %s (will pass through)", encoding)
+		}
+		return nil
+	}
+
+	// Wrap to inject JS into HTML responses and handle callbacks
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Check if this is the callback from our injected JS
+		if r.URL.Path == "/captcha_callback" {
+			token := r.URL.Query().Get("token")
+			if token != "" {
+				w.WriteHeader(200)
+				w.Write([]byte("OK"))
+				select {
+				case tokenChan <- token:
+				default:
+				}
+				return
+			}
+			w.WriteHeader(400)
+			return
+		}
+
+		// Log proxied requests for debugging
+		util.TurnLog("[Captcha] Proxying: %s %s", r.Method, r.URL.Path)
+
+		// Capture response to inject JS if HTML
+		recorder := &responseRecorder{header: make(http.Header), statusCode: 200}
+		proxy.ServeHTTP(recorder, r)
+
+		contentType := recorder.header.Get("Content-Type")
+		contentEncoding := strings.ToLower(recorder.header.Get("Content-Encoding"))
+
+		// Fallback decompression if still encoded
+		bodyBytes := recorder.body.Bytes()
+		if contentEncoding == "gzip" {
+			if gr, err := gzip.NewReader(bytes.NewReader(bodyBytes)); err == nil {
+				if decoded, err := io.ReadAll(gr); err == nil {
+					bodyBytes = decoded
+					gr.Close()
+				}
+			}
+			contentEncoding = ""
+		} else if contentEncoding == "deflate" {
+			if zr, err := zlib.NewReader(bytes.NewReader(bodyBytes)); err == nil {
+				if decoded, err := io.ReadAll(zr); err == nil {
+					bodyBytes = decoded
+				}
+				zr.Close()
+			}
+			contentEncoding = ""
+		}
+
+		if strings.Contains(contentType, "text/html") {
+			// Inject JS to intercept captcha success
+			body := string(bodyBytes)
+			injectedJS := fmt.Sprintf(`
 <script>
 (function() {
     // Intercept XHR to capture success_token
@@ -210,15 +222,14 @@ func SolveCaptchaWithProxy(redirectURI string) string {
     };
     XMLHttpRequest.prototype.send = function() {
         var xhr = this;
-        if (xhr._captchaUrl && xhr._captchaUrl.indexOf('captchaNotRobot.check') !== -1) {
+        if (xhr._captchaUrl && (xhr._captchaUrl.indexOf('captchaNotRobot.check') !== -1 || xhr._captchaUrl.indexOf('captchaNotRobot') !== -1)) {
             xhr.addEventListener('load', function() {
                 try {
                     var data = JSON.parse(xhr.responseText);
                     if (data.response && data.response.success_token) {
-                        // Send token to local server
                         fetch('http://127.0.0.1:%d/captcha_callback?token=' + encodeURIComponent(data.response.success_token));
                     }
-                } catch(e) {}
+                } catch(e) { console.log('[TG] XHR parse error:', e); }
             });
         }
         return origSend.apply(this, arguments);
@@ -228,7 +239,8 @@ func SolveCaptchaWithProxy(redirectURI string) string {
     if (origFetch) {
         window.fetch = function() {
             var url = arguments[0];
-            if (typeof url === 'string' && url.indexOf('captchaNotRobot.check') !== -1) {
+            var urlStr = typeof url === 'string' ? url : (url && url.url ? url.url : '');
+            if (urlStr.indexOf('captchaNotRobot') !== -1) {
                 return origFetch.apply(this, arguments).then(function(resp) {
                     resp.clone().text().then(function(text) {
                         try {
@@ -236,7 +248,7 @@ func SolveCaptchaWithProxy(redirectURI string) string {
                             if (data.response && data.response.success_token) {
                                 fetch('http://127.0.0.1:%d/captcha_callback?token=' + encodeURIComponent(data.response.success_token));
                             }
-                        } catch(e) {}
+                        } catch(e) { console.log('[TG] fetch parse error:', e); }
                     });
                     return resp;
                 });
@@ -244,66 +256,80 @@ func SolveCaptchaWithProxy(redirectURI string) string {
             return origFetch.apply(this, arguments);
         };
     }
+    // Also watch for success_token in window object (some VK flows set it globally)
+    var checkToken = setInterval(function() {
+        if (window.success_token) {
+            fetch('http://127.0.0.1:%d/captcha_callback?token=' + encodeURIComponent(window.success_token));
+            clearInterval(checkToken);
+        }
+    }, 500);
     console.log('[TurnGuard] Captcha interceptor installed');
 })();
 </script>
-`, port, port)
-                        body = strings.Replace(body, "</head>", injectedJS+"</head>", 1)
-                        // Copy headers except Content-Encoding and Content-Length (body length changed)
-                        for k, v := range recorder.header {
-                                if strings.EqualFold(k, "Content-Encoding") || strings.EqualFold(k, "Content-Length") {
-                                        continue
-                                }
-                                w.Header()[k] = v
-                        }
-                        w.Header().Set("Access-Control-Allow-Origin", "*")
-                        w.WriteHeader(recorder.statusCode)
-                        io.WriteString(w, body)
-                        return
-                }
+`, port, port, port)
+			// Try to inject before </head>, or before </body> if no </head>
+			if strings.Contains(body, "</head>") {
+				body = strings.Replace(body, "</head>", injectedJS+"</head>", 1)
+			} else if strings.Contains(body, "</body>") {
+				body = strings.Replace(body, "</body>", injectedJS+"</body>", 1)
+			} else {
+				body = body + injectedJS
+			}
+			// Copy headers except Content-Encoding and Content-Length (body length changed)
+			for k, v := range recorder.header {
+				if strings.EqualFold(k, "Content-Encoding") || strings.EqualFold(k, "Content-Length") {
+					continue
+				}
+				w.Header()[k] = v
+			}
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.WriteHeader(recorder.statusCode)
+			io.WriteString(w, body)
+			return
+		}
 
-                // Non-HTML: pass through (with original headers, but drop
-                // Content-Length if we decoded the body)
-                for k, v := range recorder.header {
-                        if contentEncoding == "" && (strings.EqualFold(k, "Content-Encoding") || strings.EqualFold(k, "Content-Length")) {
-                                continue
-                        }
-                        w.Header()[k] = v
-                }
-                w.WriteHeader(recorder.statusCode)
-                w.Write(bodyBytes)
-        })
+		// Non-HTML: pass through (with original headers, but drop
+		// Content-Length if we decoded the body)
+		for k, v := range recorder.header {
+			if contentEncoding == "" && (strings.EqualFold(k, "Content-Encoding") || strings.EqualFold(k, "Content-Length")) {
+				continue
+			}
+			w.Header()[k] = v
+		}
+		w.WriteHeader(recorder.statusCode)
+		w.Write(bodyBytes)
+	})
 
-        server := &http.Server{Handler: handler}
-        go server.Serve(ln)
+	server := &http.Server{Handler: handler}
+	go server.Serve(ln)
 
-        // Open browser to local proxy
-        localURL := fmt.Sprintf("http://127.0.0.1:%d/", port)
-        util.TurnLog("[Captcha] Opening browser: %s", localURL)
-        openBrowser(localURL)
-        util.TurnLog("[Captcha] Solve captcha in browser. Waiting for success_token...")
+	// Open browser to local proxy
+	localURL := fmt.Sprintf("http://127.0.0.1:%d/", port)
+	util.TurnLog("[Captcha] Opening browser: %s", localURL)
+	openBrowser(localURL)
+	util.TurnLog("[Captcha] Solve captcha in browser. Waiting for success_token...")
 
-        // Wait for token with timeout
-        ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
-        defer cancel()
+	// Wait for token with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
 
-        select {
-        case token := <-tokenChan:
-                util.TurnLog("[Captcha] Got success_token (length=%d)", len(token))
-                server.Shutdown(context.Background())
-                return token
-        case <-ctx.Done():
-                util.TurnLog("[Captcha] Timeout waiting for token")
-                server.Shutdown(context.Background())
-                return ""
-        }
+	select {
+	case token := <-tokenChan:
+		util.TurnLog("[Captcha] Got success_token (length=%d)", len(token))
+		server.Shutdown(context.Background())
+		return token
+	case <-ctx.Done():
+		util.TurnLog("[Captcha] Timeout waiting for token")
+		server.Shutdown(context.Background())
+		return ""
+	}
 }
 
 // readClose combines a Reader with a separate Closer so we can wrap
 // decompression readers while still closing the original body.
 type readClose struct {
-        Reader io.Reader
-        Closer io.Closer
+	Reader io.Reader
+	Closer io.Closer
 }
 
 func (rc *readClose) Read(p []byte) (int, error) { return rc.Reader.Read(p) }
@@ -313,20 +339,20 @@ func (rc *readClose) Close() error                { return rc.Closer.Close() }
 // Uses bytes.Buffer (not strings.Builder) so we can use Bytes() for
 // zero-copy access when injecting JS.
 type responseRecorder struct {
-        header     http.Header
-        body       bytes.Buffer
-        statusCode int
+	header     http.Header
+	body       bytes.Buffer
+	statusCode int
 }
 
 func (r *responseRecorder) Header() http.Header {
-        return r.header
+	return r.header
 }
 
 func (r *responseRecorder) WriteHeader(code int) {
-        r.statusCode = code
+	r.statusCode = code
 }
 
 func (r *responseRecorder) Write(b []byte) (int, error) {
-        r.body.Write(b)
-        return len(b), nil
+	r.body.Write(b)
+	return len(b), nil
 }

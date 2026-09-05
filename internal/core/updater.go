@@ -4,6 +4,9 @@
  *
  * updater.go — Auto-update via GitHub Releases.
  * Checks for new releases, downloads binary, replaces self.
+ *
+ * Uses ETag-based conditional requests to avoid GitHub API rate limits.
+ * (304 Not Modified responses don't count against the 60 req/hour limit.)
  */
 package core
 
@@ -14,7 +17,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/NikKuz99/turnguard/internal/util"
@@ -35,7 +40,7 @@ type githubRelease struct {
 }
 
 // CurrentVersion returns the current version string.
-var CurrentVersion = "v0.6.2"
+var CurrentVersion = "v0.6.3"
 
 // assetNameForPlatform returns the expected binary name for the current platform.
 func assetNameForPlatform() string {
@@ -55,7 +60,35 @@ func assetNameForPlatform() string {
 	}
 }
 
+// etagCachePath returns the path to the ETag cache file.
+// Stored in the same directory as the executable (or temp dir if that fails).
+func etagCachePath() string {
+	exePath, err := os.Executable()
+	if err != nil {
+		return filepath.Join(os.TempDir(), "turnguard_etag.txt")
+	}
+	return exePath + ".etag"
+}
+
+// loadCachedETag reads the cached ETag from disk.
+func loadCachedETag() string {
+	data, err := os.ReadFile(etagCachePath())
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// saveCachedETag writes the ETag to disk for future conditional requests.
+func saveCachedETag(etag string) {
+	if etag == "" {
+		return
+	}
+	_ = os.WriteFile(etagCachePath(), []byte(etag), 0644)
+}
+
 // CheckForUpdate checks GitHub Releases for a newer version.
+// Uses ETag-based conditional requests to minimize API rate limit consumption.
 // Returns the download URL if an update is available, empty string otherwise.
 func CheckForUpdate() (string, string, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", githubOwner, githubRepo)
@@ -65,6 +98,14 @@ func CheckForUpdate() (string, string, error) {
 
 	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	req.Header.Set("User-Agent", "TurnGuard-Updater")
+
+	// Use cached ETag for conditional request — GitHub returns 304 (doesn't
+	// count against rate limit) if the release hasn't changed since last check.
+	cachedETag := loadCachedETag()
+	if cachedETag != "" {
+		req.Header.Set("If-None-Match", cachedETag)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -72,8 +113,30 @@ func CheckForUpdate() (string, string, error) {
 	}
 	defer resp.Body.Close()
 
+	// 304 = Not Modified (release unchanged since last check)
+	// This doesn't count against the rate limit — safe to retry frequently.
+	if resp.StatusCode == 304 {
+		util.TurnLog("[Updater] GitHub API: 304 Not Modified (cached, rate-limit-free)")
+		// No new version — the cached release is the same as before
+		return "", "", nil
+	}
+
+	if resp.StatusCode == 403 {
+		// Rate limited — check X-RateLimit-Reset header for when to retry
+		reset := resp.Header.Get("X-RateLimit-Reset")
+		remaining := resp.Header.Get("X-RateLimit-Remaining")
+		util.TurnLog("[Updater] GitHub API rate limited (remaining=%s, reset=%s)", remaining, reset)
+		return "", "", fmt.Errorf("GitHub API rate limited (403) — will retry later")
+	}
+
 	if resp.StatusCode != 200 {
 		return "", "", fmt.Errorf("GitHub API returned %d", resp.StatusCode)
+	}
+
+	// Cache the new ETag for future requests
+	newETag := resp.Header.Get("ETag")
+	if newETag != "" {
+		saveCachedETag(newETag)
 	}
 
 	var release githubRelease
@@ -99,11 +162,6 @@ func CheckForUpdate() (string, string, error) {
 }
 
 // DownloadAndUpdate downloads the new binary and replaces the current process.
-// Note: The actual replacement requires a restart. This function:
-// 1. Downloads the new binary to a temp file
-// 2. Renames the current binary to .old
-// 3. Renames the new binary to the current binary name
-// 4. The user needs to restart the application
 func DownloadAndUpdate(downloadURL string) error {
 	util.TurnLog("[Updater] Downloading update...")
 
@@ -111,6 +169,7 @@ func DownloadAndUpdate(downloadURL string) error {
 	defer cancel()
 
 	req, _ := http.NewRequestWithContext(ctx, "GET", downloadURL, nil)
+	req.Header.Set("User-Agent", "TurnGuard-Updater")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("download failed: %w", err)
@@ -121,13 +180,11 @@ func DownloadAndUpdate(downloadURL string) error {
 		return fmt.Errorf("download returned %d", resp.StatusCode)
 	}
 
-	// Get current executable path
 	exePath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("failed to get executable path: %w", err)
 	}
 
-	// Download to temp file
 	tmpPath := exePath + ".new"
 	tmpFile, err := os.Create(tmpPath)
 	if err != nil {
@@ -143,13 +200,11 @@ func DownloadAndUpdate(downloadURL string) error {
 
 	util.TurnLog("[Updater] Downloaded %d bytes", written)
 
-	// Make executable
 	if err := os.Chmod(tmpPath, 0755); err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("chmod failed: %w", err)
 	}
 
-	// Backup current binary
 	backupPath := exePath + ".old"
 	os.Remove(backupPath)
 	if err := os.Rename(exePath, backupPath); err != nil {
@@ -157,9 +212,7 @@ func DownloadAndUpdate(downloadURL string) error {
 		return fmt.Errorf("backup failed: %w", err)
 	}
 
-	// Move new binary to current path
 	if err := os.Rename(tmpPath, exePath); err != nil {
-		// Restore backup
 		os.Rename(backupPath, exePath)
 		return fmt.Errorf("replace failed: %w", err)
 	}
@@ -174,7 +227,7 @@ func DownloadAndUpdate(downloadURL string) error {
 //
 // T15: Behavior (synced with Android Updater.kt):
 //   - First check immediately on start
-//   - On failure (no internet, etc.): silent retry every 60 seconds
+//   - On failure (no internet, rate limited, etc.): silent retry every 60 seconds
 //     (no user notification, just Log)
 //   - On success (response received, even if no new version): exit the loop —
 //     do not poll GitHub again until next app launch
@@ -192,7 +245,6 @@ func StartUpdateChecker(ctx context.Context) {
 
 			url, version, err := CheckForUpdate()
 			if err != nil {
-				// T15: silent retry — do not notify user (likely no internet)
 				util.TurnLog("[Updater] Update check failed, retry in 60s: %v", err)
 				select {
 				case <-ctx.Done():
@@ -211,7 +263,6 @@ func StartUpdateChecker(ctx context.Context) {
 			util.TurnLog("[Updater] New version available: %s", version)
 			if err := DownloadAndUpdate(url); err != nil {
 				util.TurnLog("[Updater] Update download failed: %v", err)
-				// Retry the whole cycle in 60s
 				select {
 				case <-ctx.Done():
 					return
@@ -220,7 +271,6 @@ func StartUpdateChecker(ctx context.Context) {
 				continue
 			}
 
-			// Update installed — exit loop (will apply on next restart)
 			util.TurnLog("[Updater] Update installed, stopping periodic check (restart to apply)")
 			return
 		}

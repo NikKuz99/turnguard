@@ -54,14 +54,30 @@ const (
 )
 
 func captchaSolveModeForAttempt(attempt int, manualCaptcha bool, enableSliderPOC bool) (captchaSolveMode, bool) {
+	// New order: try auto-solver methods first (multiple retries),
+	// only fall back to manual browser as last resort.
+	// This keeps the solving fully automatic in most cases.
 	switch attempt {
 	case 0:
-		return captchaSolveModeAuto, true
-	case 1:
+		// Slider POC is the most reliable method (handles slider captcha)
 		if enableSliderPOC {
 			return captchaSolveModeSliderPOC, true
 		}
+		return captchaSolveModeAuto, true
+	case 1:
+		// Plain PoW + API (no slider, just checkbox-style check)
+		return captchaSolveModeAuto, true
 	case 2:
+		// Retry slider POC (VK may show a different captcha on retry)
+		if enableSliderPOC {
+			return captchaSolveModeSliderPOC, true
+		}
+		return captchaSolveModeAuto, true
+	case 3:
+		// Retry plain PoW + API
+		return captchaSolveModeAuto, true
+	case 4:
+		// Last resort: manual browser solving
 		if manualCaptcha {
 			return captchaSolveModeManual, true
 		}

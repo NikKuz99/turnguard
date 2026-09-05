@@ -574,17 +574,76 @@ struct GithubAsset {
     browser_download_url: String,
 }
 
+/// ETag cache file path (stored next to the GUI binary's data dir)
+fn etag_cache_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join("github_etag.txt"))
+}
+
+/// Load cached ETag from disk
+fn load_cached_etag(app: &tauri::AppHandle) -> String {
+    etag_cache_path(app)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_default()
+}
+
+/// Save ETag to disk for future conditional requests
+fn save_cached_etag(app: &tauri::AppHandle, etag: &str) {
+    if etag.is_empty() { return; }
+    if let Some(p) = etag_cache_path(app) {
+        let _ = std::fs::write(p, etag);
+    }
+}
+
 #[tauri::command]
-fn check_for_gui_update() -> Result<String, String> {
+fn check_for_gui_update(app: tauri::AppHandle) -> Result<String, String> {
     let url = "https://api.github.com/repos/NikKuz99/turnguard/releases/latest";
-    let resp = reqwest::blocking::Client::new()
+
+    let mut req = reqwest::blocking::Client::new()
         .get(url)
         .header("User-Agent", "TurnGuard-GUI")
-        .send()
+        .header("Accept", "application/vnd.github.v3+json");
+
+    // Use cached ETag for conditional request (304 = rate-limit-free)
+    let cached_etag = load_cached_etag(&app);
+    if !cached_etag.is_empty() {
+        req = req.header("If-None-Match", &cached_etag);
+    }
+
+    let resp = req.send()
         .map_err(|e| format!("request failed: {}", e))?;
 
+    // 304 = Not Modified (release unchanged, rate-limit-free)
+    if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
+        let current = env!("CARGO_PKG_VERSION");
+        let result = serde_json::json!({
+            "update_available": false,
+            "current_version": current,
+            "latest_version": current,
+            "cached": true,
+        });
+        return Ok(result.to_string());
+    }
+
+    // Handle 403 rate limit gracefully
+    if resp.status() == reqwest::StatusCode::FORBIDDEN {
+        let remaining = resp.headers().get("X-RateLimit-Remaining")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("?");
+        return Err(format!(
+            "GitHub API rate limited (remaining: {}). Please wait a few minutes before checking again.",
+            remaining
+        ));
+    }
+
     if !resp.status().is_success() {
-        return Err(format!("github API status: {}", resp.status()));
+        return Err(format!("GitHub API returned {}", resp.status()));
+    }
+
+    // Cache the new ETag
+    if let Some(etag) = resp.headers().get("ETag") {
+        if let Ok(etag_str) = etag.to_str() {
+            save_cached_etag(&app, etag_str);
+        }
     }
 
     let release: GithubRelease = resp.json()
