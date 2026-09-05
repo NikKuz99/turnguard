@@ -12,6 +12,15 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+// CREATE_NO_WINDOW flag for Windows — prevents console window from appearing
+// when launching console subprocesses (turnguard CLI) from a GUI app.
+// 0x08000000 = CREATE_NO_WINDOW
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // State
 // ─────────────────────────────────────────────────────────────────────────────
@@ -34,70 +43,45 @@ impl Default for ProxyState {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Config structs
+// Tunnel config (must match frontend)
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VpnConfig {
-    pub enabled: bool,
-    pub private_key: String,
-    pub server_key: String,
-    pub server_addr: String,
-    pub allowed_ips: String,
-    pub mtu: u32,
-    pub keepalive: u32,
+#[derive(Clone, Serialize, Deserialize)]
+struct TunnelConfig {
+    #[serde(default)]
+    vk_link: String,
+    #[serde(default)]
+    peer: String,
+    #[serde(default)]
+    wrap_key: String,
+    #[serde(default)]
+    streams: i32,
+    #[serde(default)]
+    udp: bool,
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    vpn: bool,
+    #[serde(default)]
+    private_key: String,
+    #[serde(default)]
+    server_key: String,
+    #[serde(default)]
+    server_addr: String,
+    #[serde(default)]
+    allowed_ips: String,
+    #[serde(default)]
+    mtu: i32,
+    #[serde(default)]
+    keepalive: i32,
+    #[serde(default)]
+    exclude_private: bool,
 }
 
-impl Default for VpnConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            private_key: String::new(),
-            server_key: String::new(),
-            server_addr: "127.0.0.1:9000".to_string(),
-            allowed_ips: "0.0.0.0/0, ::0".to_string(),
-            mtu: 1280,
-            keepalive: 25,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AppConfig {
-    pub vk_link: String,
-    pub peer: String,
-    pub listen: String,
-    pub wrap_key: String,
-    pub streams: u32,
-    pub udp: bool,
-    pub mode: String,
-    pub peer_type: String,
-    pub vpn: VpnConfig,
-    pub auto_update: bool,
-}
-
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            vk_link: String::new(),
-            peer: String::new(),
-            listen: "127.0.0.1:9000".to_string(),
-            wrap_key: String::new(),
-            streams: 4,
-            udp: false,
-            mode: "vk_link".to_string(),
-            peer_type: "proxy_v1".to_string(),
-            vpn: VpnConfig::default(),
-            auto_update: true,
-        }
-    }
-}
-
-/// Tunnel = name + config. Stored as individual JSON files.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Tunnel {
-    pub name: String,
-    pub config: AppConfig,
+#[derive(Clone, Serialize, Deserialize)]
+struct Tunnel {
+    name: String,
+    config: TunnelConfig,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -105,47 +89,56 @@ pub struct Tunnel {
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn app_data_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
-    app.path().app_data_dir().ok().map(|d| {
-        let _ = fs::create_dir_all(&d);
-        d
-    })
+    app.path().app_data_dir().ok()
 }
 
 fn tunnels_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
-    app_data_dir(app).map(|d| {
-        let dir = d.join("tunnels");
-        let _ = fs::create_dir_all(&dir);
-        dir
-    })
+    let dir = app_data_dir(app)?.join("tunnels");
+    let _ = fs::create_dir_all(&dir);
+    Some(dir)
 }
 
 fn dns_cache_path(app: &tauri::AppHandle) -> Option<PathBuf> {
     app_data_dir(app).map(|d| d.join("dns_cache.json"))
 }
 
+/// Locate the turnguard CLI binary. Looks in:
+/// 1. App data dir /bin/turnguard(.exe)
+/// 2. Same dir as the GUI executable (sidecar)
+/// 3. PATH
 fn find_turnguard_binary(app: &tauri::AppHandle) -> Option<PathBuf> {
-    let bin_name = if cfg!(windows) { "turnguard.exe" } else { "turnguard" };
+    let exe_name = if cfg!(windows) { "turnguard.exe" } else { "turnguard" };
 
     // 1. App data dir /bin/
-    if let Some(data_dir) = app.path().app_data_dir().ok() {
-        let candidate = data_dir.join("bin").join(bin_name);
+    if let Some(bin_dir) = app_data_dir(app).map(|d| d.join("bin")) {
+        let candidate = bin_dir.join(exe_name);
         if candidate.exists() {
             return Some(candidate);
         }
     }
 
-    // 2. Resources (bundled)
+    // 2. Resource dir (externalBin)
     if let Some(resource_dir) = app.path().resource_dir().ok() {
-        let candidate = resource_dir.join(bin_name);
+        let candidate = resource_dir.join(exe_name);
         if candidate.exists() {
             return Some(candidate);
         }
     }
 
-    // 3. PATH
+    // 3. Side-by-side with GUI exe
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let candidate = parent.join(exe_name);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    // 4. PATH lookup
     if let Ok(path) = std::env::var("PATH") {
         for dir in path.split(if cfg!(windows) { ';' } else { ':' }) {
-            let candidate = PathBuf::from(dir).join(bin_name);
+            let candidate = PathBuf::from(dir).join(exe_name);
             if candidate.exists() {
                 return Some(candidate);
             }
@@ -155,17 +148,18 @@ fn find_turnguard_binary(app: &tauri::AppHandle) -> Option<PathBuf> {
     None
 }
 
-/// Sanitize tunnel name for use as filename
-fn sanitize_name(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
+/// Apply platform-specific flags to hide console window on Windows.
+/// On Windows, spawning a console subprocess from a GUI app produces
+/// a visible console window. CREATE_NO_WINDOW suppresses it.
+fn apply_no_window(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = cmd;
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -176,7 +170,6 @@ fn sanitize_name(name: &str) -> String {
 fn list_tunnels(app: tauri::AppHandle) -> Result<Vec<Tunnel>, String> {
     let dir = tunnels_dir(&app).ok_or("no app data dir")?;
     let mut tunnels = Vec::new();
-
     if let Ok(entries) = fs::read_dir(&dir) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -189,16 +182,14 @@ fn list_tunnels(app: tauri::AppHandle) -> Result<Vec<Tunnel>, String> {
             }
         }
     }
-
-    tunnels.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(tunnels)
 }
 
 #[tauri::command]
 fn save_tunnel(app: tauri::AppHandle, tunnel: Tunnel) -> Result<(), String> {
     let dir = tunnels_dir(&app).ok_or("no app data dir")?;
-    let filename = format!("{}.json", sanitize_name(&tunnel.name));
-    let path = dir.join(filename);
+    let safe_name = sanitize_name(&tunnel.name);
+    let path = dir.join(format!("{}.json", safe_name));
     let data = serde_json::to_string_pretty(&tunnel).map_err(|e| e.to_string())?;
     fs::write(&path, data).map_err(|e| e.to_string())?;
     Ok(())
@@ -207,26 +198,29 @@ fn save_tunnel(app: tauri::AppHandle, tunnel: Tunnel) -> Result<(), String> {
 #[tauri::command]
 fn delete_tunnel(app: tauri::AppHandle, name: String) -> Result<(), String> {
     let dir = tunnels_dir(&app).ok_or("no app data dir")?;
-    let filename = format!("{}.json", sanitize_name(&name));
-    let path = dir.join(filename);
+    let safe_name = sanitize_name(&name);
+    let path = dir.join(format!("{}.json", safe_name));
     if path.exists() {
         fs::remove_file(&path).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
+fn sanitize_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 #[tauri::command]
-fn start_tunnel(app: tauri::AppHandle, name: String, state: State<'_, ProxyState>) -> Result<(), String> {
-    // Stop any running tunnel first
-    if state.running.load(Ordering::SeqCst) {
-        stop_tunnel_internal(&state);
-    }
+fn start_tunnel(app: tauri::AppHandle, state: State<'_, ProxyState>, name: String) -> Result<(), String> {
+    // Stop any existing tunnel first
+    stop_tunnel_internal(&state);
 
-    // Load tunnel config
     let dir = tunnels_dir(&app).ok_or("no app data dir")?;
-    let filename = format!("{}.json", sanitize_name(&name));
-    let tunnel_path = dir.join(filename);
-
+    let tunnel_path = dir.join(format!("{}.json", sanitize_name(&name)));
     if !tunnel_path.exists() {
         return Err(format!("tunnel '{}' not found", name));
     }
@@ -252,6 +246,9 @@ fn start_tunnel(app: tauri::AppHandle, name: String, state: State<'_, ProxyState
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     cmd.stdin(Stdio::null());
+
+    // Hide console window on Windows
+    apply_no_window(&mut cmd);
 
     let mut child = cmd.spawn().map_err(|e| {
         format!("failed to spawn {}: {}", binary.display(), e)
@@ -362,9 +359,10 @@ fn check_update(app: tauri::AppHandle) -> Result<String, String> {
     let binary = find_turnguard_binary(&app)
         .ok_or("turnguard binary not found")?;
 
-    let output = Command::new(&binary)
-        .arg("-check-update")
-        .output()
+    let mut cmd = Command::new(&binary);
+    cmd.arg("-check-update");
+    apply_no_window(&mut cmd);
+    let output = cmd.output()
         .map_err(|e| format!("failed to spawn: {}", e))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -434,17 +432,14 @@ fn import_tunnel(app: tauri::AppHandle, path: String) -> Result<Vec<Tunnel>, Str
                 .trim_end_matches(".CONF")
                 .to_string();
 
-            let mut content_str = String::new();
-            std::io::Read::read_to_string(&mut entry, &mut content_str)
-                .map_err(|e| e.to_string())?;
+            let mut content = String::new();
+            use std::io::Read;
+            entry.read_to_string(&mut content).map_err(|e| e.to_string())?;
 
-            let tunnel = parse_conf_content(&content_str, &name)?;
-            tunnels.push(tunnel);
+            if let Ok(tunnel) = parse_conf_content(&content, &name) {
+                tunnels.push(tunnel);
+            }
         }
-    }
-
-    for tunnel in &tunnels {
-        save_tunnel(app.clone(), tunnel.clone())?;
     }
 
     Ok(tunnels)
@@ -456,201 +451,206 @@ fn parse_conf_file(path: &PathBuf, name: &str) -> Result<Tunnel, String> {
 }
 
 fn parse_conf_content(content: &str, name: &str) -> Result<Tunnel, String> {
-    let mut config = AppConfig::default();
-    let mut tunnel_name = name.to_string();
-    let mut current_section = "";
-    let mut has_interface = false;
-    let mut has_peer = false;
-    let mut turn_enabled = false;
+    let mut vk_link = String::new();
+    let mut peer = String::new();
+    let mut wrap_key = String::new();
+    let mut private_key = String::new();
+    let mut server_key = String::new();
+    let mut server_addr = String::new();
+    let mut allowed_ips = String::new();
+    let mut mtu: i32 = 1280;
+    let mut keepalive: i32 = 25;
+    let mut listen_port: i32 = 9000;
+    let mut exclude_private = false;
 
     for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() { continue; }
-
-        // Support both #@wgt: (Android export format) and #turn. (legacy)
-        let turn_prefix = if trimmed.starts_with("#@wgt:") {
-            Some(&trimmed["#@wgt:".len()..])
-        } else if trimmed.starts_with("#turn.") {
-            Some(&trimmed["#turn.".len()..])
-        } else {
-            None
-        };
-
-        if let Some(rest) = turn_prefix {
-            if let Some(eq_pos) = rest.find('=') {
-                let key = rest[..eq_pos].trim();
-                let value = rest[eq_pos + 1..].trim();
-                match key {
-                    "VKLink" | "vk_link" => config.vk_link = value.to_string(),
-                    "WrapKey" | "wrap_key" => config.wrap_key = value.to_string(),
-                    "Mode" | "mode" => config.mode = value.to_string(),
-                    "StreamNum" | "streams" => config.streams = value.parse().unwrap_or(4),
-                    "UseUDP" | "udp" => config.udp = value == "true" || value == "1",
-                    "LocalPort" | "listen" => {
-                        let listen_val = if value.contains(':') {
-                            value.to_string()
-                        } else {
-                            format!("127.0.0.1:{}", value)
-                        };
-                        config.listen = listen_val;
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            // Parse TURN-specific comments: #turn.vk_link = ...
+            // Also support Android export format: #@wgt:vk_link=...
+            if line.starts_with("#turn.") || line.starts_with("#@wgt:") {
+                let comment_content = if line.starts_with("#turn.") {
+                    &line[6..]
+                } else {
+                    &line[6..]
+                };
+                if let Some(eq_pos) = comment_content.find('=') {
+                    let key = comment_content[..eq_pos].trim();
+                    let value = comment_content[eq_pos + 1..].trim();
+                    match key {
+                        "vk_link" | "vk-link" => vk_link = value.to_string(),
+                        "peer" => peer = value.to_string(),
+                        "wrap_key" | "wrap-key" => wrap_key = value.to_string(),
+                        "exclude_private" | "exclude-private" => {
+                            exclude_private = value == "true" || value == "1";
+                        }
+                        _ => {}
                     }
-                    "IPPort" | "peer" => config.peer = value.to_string(),
-                    "PeerType" | "peer_type" => config.peer_type = value.to_string(),
-                    "EnableTURN" | "enable_turn" => turn_enabled = value == "true" || value == "1",
-                    "Name" | "name" => tunnel_name = value.to_string(),
-                    _ => {}
                 }
             }
             continue;
         }
-
-        // Skip regular comments
-        if trimmed.starts_with('#') { continue; }
-
-        // Section headers
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            current_section = &trimmed[1..trimmed.len() - 1];
-            if current_section == "Interface" { has_interface = true; }
-            else if current_section == "Peer" { has_peer = true; }
+        if line.starts_with('[') {
             continue;
         }
-
-        // Key = Value
-        if let Some(eq_pos) = trimmed.find('=') {
-            let key = trimmed[..eq_pos].trim();
-            let value = trimmed[eq_pos + 1..].trim();
-            match current_section {
-                "Interface" => match key {
-                    "PrivateKey" => config.vpn.private_key = base64_to_hex(value),
-                    "MTU" => config.vpn.mtu = value.parse().unwrap_or(1280),
-                    _ => {}
-                },
-                "Peer" => match key {
-                    "Endpoint" => {
-                        // Endpoint is the WireGuard server address (for VPN mode)
-                        config.vpn.server_addr = value.to_string();
+        if let Some(eq_pos) = line.find('=') {
+            let key = line[..eq_pos].trim().to_lowercase();
+            let value = line[eq_pos + 1..].trim();
+            match key.as_str() {
+                "privatekey" => private_key = value.to_string(),
+                "publickey" | "serverkey" => server_key = value.to_string(),
+                "endpoint" => {
+                    // If value already has host:port, use as server_addr
+                    // Otherwise default to 127.0.0.1:<port>
+                    if value.contains(':') {
+                        server_addr = value.to_string();
+                    } else {
+                        server_addr = format!("127.0.0.1:{}", value);
                     }
-                    "PublicKey" => config.vpn.server_key = base64_to_hex(value),
-                    "AllowedIPs" => config.vpn.allowed_ips = value.to_string(),
-                    "PersistentKeepalive" => config.vpn.keepalive = value.parse().unwrap_or(25),
-                    _ => {}
-                },
+                }
+                "allowedips" => allowed_ips = value.to_string(),
+                "mtu" => mtu = value.parse().unwrap_or(1280),
+                "persistentkeepalive" | "keepalive" => {
+                    keepalive = value.parse().unwrap_or(25)
+                }
+                "listenport" => {
+                    listen_port = value.parse().unwrap_or(9000);
+                }
                 _ => {}
             }
         }
     }
 
-    // If .conf has interface + peer, enable VPN mode
-    if has_interface && has_peer { config.vpn.enabled = true; }
-
-    Ok(Tunnel { name: tunnel_name, config })
-}
-
-fn base64_to_hex(base64_str: &str) -> String {
-    let table: [u8; 256] = {
-        let mut t = [255u8; 256];
-        for (i, c) in b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".iter().enumerate() {
-            t[*c as usize] = i as u8;
-        }
-        t
-    };
-    let input = base64_str.trim().trim_end_matches('=').as_bytes();
-    let mut output = Vec::new();
-    let mut i = 0;
-    while i < input.len() {
-        let a = table[input[i] as usize];
-        let b = if i + 1 < input.len() { table[input[i + 1] as usize] } else { 0 };
-        let c2 = if i + 2 < input.len() { table[input[i + 2] as usize] } else { 0 };
-        let d = if i + 3 < input.len() { table[input[i + 3] as usize] } else { 0 };
-        if a == 255 || b == 255 { break; }
-        output.push((a << 2) | (b >> 4));
-        if i + 2 < input.len() && c2 != 255 {
-            output.push((b << 4) | (c2 >> 2));
-            if i + 3 < input.len() && d != 255 {
-                output.push((c2 << 6) | d);
-            }
-        }
-        i += 4;
-    }
-    output.iter().map(|b| format!("{:02x}", b)).collect()
-}
-
-
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Update checker (T15: check on start, notify GUI)
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UpdateInfo {
-    pub available: bool,
-    pub current_version: String,
-    pub latest_version: String,
-    pub download_url: String,
-    pub download_size: i64,
-    pub release_notes: String,
-}
-
-#[tauri::command]
-fn check_for_gui_update() -> Result<UpdateInfo, String> {
-    let url = format!("https://api.github.com/repos/{}/releases/latest", "NikKuz99/turnguard");
-
-    let resp = reqwest::blocking::get(&url)
-        .map_err(|e| format!("failed to check updates: {}", e))?;
-
-    if resp.status() != 200 {
-        return Err(format!("GitHub API returned {}", resp.status()));
+    // If server_addr is empty, default to 127.0.0.1:listen_port
+    if server_addr.is_empty() {
+        server_addr = format!("127.0.0.1:{}", listen_port);
     }
 
-    let body: serde_json::Value = resp.json()
-        .map_err(|e| format!("failed to parse release: {}", e))?;
-
-    let latest = body["tag_name"].as_str().unwrap_or("");
-    let current = env!("CARGO_PKG_VERSION");
-    let current_tag = format!("v{}", current);
-
-    let download_url = String::new();
-    let download_size: i64 = 0;
-
-    // Find the right asset
-    let asset_name = if cfg!(windows) {
-        "TurnGuard_{}_x64-setup.exe"
-    } else {
-        "TurnGuard_{}_amd64.deb"
-    };
-
-    let mut found_url = String::new();
-    let mut found_size: i64 = 0;
-
-    if let Some(assets) = body["assets"].as_array() {
-        for asset in assets {
-            let name = asset["name"].as_str().unwrap_or("");
-            // Match any version pattern
-            if (cfg!(windows) && name.ends_with("_x64-setup.exe"))
-                || (!cfg!(windows) && name.ends_with("_amd64.deb"))
-                || (!cfg!(windows) && name.ends_with("_amd64.AppImage"))
-            {
-                found_url = asset["browser_download_url"].as_str().unwrap_or("").to_string();
-                found_size = asset["size"].as_i64().unwrap_or(0);
-                break;
-            }
-        }
-    }
-
-    let release_notes = body["body"].as_str().unwrap_or("").to_string();
-
-    let available = !latest.is_empty() && latest != current_tag;
-
-    Ok(UpdateInfo {
-        available,
-        current_version: current_tag,
-        latest_version: latest.to_string(),
-        download_url: found_url,
-        download_size: found_size,
-        release_notes,
+    Ok(Tunnel {
+        name: name.to_string(),
+        config: TunnelConfig {
+            vk_link,
+            peer,
+            wrap_key,
+            streams: 4,
+            udp: false,
+            mode: "vk_link".to_string(),
+            vpn: true,
+            private_key,
+            server_key,
+            server_addr,
+            allowed_ips: if allowed_ips.is_empty() {
+                "0.0.0.0/0, ::0".to_string()
+            } else {
+                allowed_ips
+            },
+            mtu,
+            keepalive,
+            exclude_private,
+        },
     })
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GUI update checker
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(serde::Deserialize, Debug)]
+struct GithubRelease {
+    tag_name: String,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    html_url: String,
+    #[serde(default)]
+    assets: Vec<GithubAsset>,
+}
+
+#[derive(serde::Deserialize, Debug)]
+struct GithubAsset {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    browser_download_url: String,
+}
+
+#[tauri::command]
+fn check_for_gui_update() -> Result<String, String> {
+    let url = "https://api.github.com/repos/NikKuz99/turnguard/releases/latest";
+    let resp = reqwest::blocking::Client::new()
+        .get(url)
+        .header("User-Agent", "TurnGuard-GUI")
+        .send()
+        .map_err(|e| format!("request failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("github API status: {}", resp.status()));
+    }
+
+    let release: GithubRelease = resp.json()
+        .map_err(|e| format!("json parse failed: {}", e))?;
+
+    let latest = release.tag_name.trim_start_matches('v');
+    let current = env!("CARGO_PKG_VERSION");
+
+    if version_gt(latest, current) {
+        // Find Windows .exe asset if on Windows
+        let asset_pattern = if cfg!(windows) {
+            ".exe"
+        } else if cfg!(target_os = "linux") {
+            if cfg!(target_arch = "x86_64") {
+                "_amd64.deb"
+            } else {
+                "_arm64.deb"
+            }
+        } else if cfg!(target_os = "macos") {
+            ".dmg"
+        } else {
+            ""
+        };
+
+        let download_url = release.assets.iter()
+            .find(|a| a.name.contains(asset_pattern))
+            .map(|a| a.browser_download_url.clone())
+            .unwrap_or_else(|| release.html_url.clone());
+
+        let result = serde_json::json!({
+            "update_available": true,
+            "latest_version": latest,
+            "current_version": current,
+            "download_url": download_url,
+            "release_url": release.html_url,
+            "release_notes": release.body,
+        });
+        Ok(result.to_string())
+    } else {
+        let result = serde_json::json!({
+            "update_available": false,
+            "current_version": current,
+            "latest_version": latest,
+        });
+        Ok(result.to_string())
+    }
+}
+
+/// Compare semantic versions: returns true if `a` > `b`
+fn version_gt(a: &str, b: &str) -> bool {
+    let parse = |s: &str| -> Vec<u64> {
+        s.split('.')
+            .filter_map(|p| p.parse::<u64>().ok())
+            .collect()
+    };
+    let av = parse(a);
+    let bv = parse(b);
+    for i in 0..std::cmp::max(av.len(), bv.len()) {
+        let an = av.get(i).copied().unwrap_or(0);
+        let bn = bv.get(i).copied().unwrap_or(0);
+        if an != bn {
+            return an > bn;
+        }
+    }
+    false
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // App entry point
@@ -664,7 +664,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
-        .manage(ProxyState::default())
+                .manage(ProxyState::default())
         .invoke_handler(tauri::generate_handler![
             list_tunnels,
             save_tunnel,

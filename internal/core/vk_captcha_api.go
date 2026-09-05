@@ -317,7 +317,18 @@ func fetchCaptchaBootstrap(ctx context.Context, redirectURI string, client tlscl
 	if err != nil {
 		return nil, err
 	}
-	return parseCaptchaBootstrapHTML(string(body))
+	// Try the extended parser with multiple patterns
+    result, err := parseCaptchaBootstrapHTMLExt(string(body))
+    if err != nil {
+        // Log a snippet of the HTML for debugging
+        snippet := string(body)
+        if len(snippet) > 500 {
+            snippet = snippet[:500] + "...(truncated)"
+        }
+        util.TurnLog("[Captcha] Bootstrap parse failed. HTML snippet: %s", snippet)
+        return nil, err
+    }
+    return result, nil
 }
 
 func solvePoW(powInput string, difficulty int) (string, int, bool) {
