@@ -47,6 +47,38 @@ impl Default for ProxyState {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Serialize, Deserialize)]
+struct VPNConfig {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    private_key: String,
+    #[serde(default)]
+    server_key: String,
+    #[serde(default)]
+    server_addr: String,
+    #[serde(default)]
+    allowed_ips: String,
+    #[serde(default)]
+    mtu: i32,
+    #[serde(default)]
+    keepalive: i32,
+}
+
+impl Default for VPNConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            private_key: String::new(),
+            server_key: String::new(),
+            server_addr: "127.0.0.1:9000".to_string(),
+            allowed_ips: "0.0.0.0/0, ::0".to_string(),
+            mtu: 1280,
+            keepalive: 25,
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 struct TunnelConfig {
     #[serde(default)]
     vk_link: String,
@@ -61,19 +93,7 @@ struct TunnelConfig {
     #[serde(default)]
     mode: String,
     #[serde(default)]
-    vpn: bool,
-    #[serde(default)]
-    private_key: String,
-    #[serde(default)]
-    server_key: String,
-    #[serde(default)]
-    server_addr: String,
-    #[serde(default)]
-    allowed_ips: String,
-    #[serde(default)]
-    mtu: i32,
-    #[serde(default)]
-    keepalive: i32,
+    vpn: VPNConfig,
     #[serde(default)]
     exclude_private: bool,
 }
@@ -579,6 +599,22 @@ fn parse_conf_content(content: &str, name: &str) -> Result<Tunnel, String> {
         server_addr = format!("127.0.0.1:{}", listen_port);
     }
 
+    // Build VPN config — private_key, server_key, etc. go into vpn sub-struct
+    // to match Go CLI's Config.VPN (VPNConfigSection) JSON structure
+    let vpn = VPNConfig {
+        enabled: true,  // Imported tunnels always enable VPN by default
+        private_key,
+        server_key,
+        server_addr,
+        allowed_ips: if allowed_ips.is_empty() {
+            "0.0.0.0/0, ::0".to_string()
+        } else {
+            allowed_ips
+        },
+        mtu,
+        keepalive,
+    };
+
     Ok(Tunnel {
         name: name.to_string(),
         config: TunnelConfig {
@@ -588,17 +624,7 @@ fn parse_conf_content(content: &str, name: &str) -> Result<Tunnel, String> {
             streams,
             udp,
             mode,
-            vpn: true,
-            private_key,
-            server_key,
-            server_addr,
-            allowed_ips: if allowed_ips.is_empty() {
-                "0.0.0.0/0, ::0".to_string()
-            } else {
-                allowed_ips
-            },
-            mtu,
-            keepalive,
+            vpn,
             exclude_private,
         },
     })

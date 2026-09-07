@@ -181,6 +181,42 @@ def test_process_alive():
     return r
 
 
+def test_internet_through_tunnel():
+    """Internet accessible through the tunnel.
+    The tunnel listens on 127.0.0.1:9000 (WireGuard endpoint).
+    If VPN mode is active, traffic should route through the tunnel.
+    We test by checking if we can reach external hosts.
+    Note: this may fail if tunnel doesn't route all traffic — that's OK,
+    the test is informational (not a hard failure).
+    """
+    r = {"name": "internet_through_tunnel", "passed": False, "message": ""}
+    ok, detail = check_internet(timeout=15)
+    r["passed"] = ok
+    r["message"] = f"Internet: {detail}" if ok else f"No internet: {detail}"
+    return r
+
+
+def test_tunnel_log_no_errors():
+    """Tunnel log doesn't contain fatal errors."""
+    r = {"name": "tunnel_log_no_errors", "passed": False, "message": ""}
+
+    log_path = "/tmp/tg_tunnel.log"
+    if not os.path.exists(log_path):
+        r["message"] = "No log file"
+        return r
+
+    with open(log_path) as f:
+        content = f.read()
+
+    # Check for fatal error indicators
+    fatal_errors = ["FATAL", "panic:", "SIGKILL", "exit code 1"]
+    found_fatal = [e for e in fatal_errors if e in content]
+
+    r["passed"] = len(found_fatal) == 0
+    r["message"] = "No fatal errors" if r["passed"] else f"Fatal errors: {found_fatal}"
+    return r
+
+
 def cleanup():
     if hasattr(test_tunnel_starts, 'proc'):
         try:
@@ -232,6 +268,8 @@ def main():
         results.append(test_dns_resolution())
         results.append(test_captcha_attempted())
         results.append(test_process_alive())
+        results.append(test_internet_through_tunnel())
+        results.append(test_tunnel_log_no_errors())
 
     finally:
         cleanup()
