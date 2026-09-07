@@ -46,6 +46,9 @@ var powInputPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`getPowInput\s*\(\s*\)\s*\{[^}]*return\s+"([^"]+)"`),
 	// Object property: powInput: "..." (inside JS object literal)
 	regexp.MustCompile(`\bpowInput\s*:\s*"([^"]+)"`),
+	// VK BFF obfuscated function call: }("POW_INPUT",DIFFICULTY,"pow_timeout"))
+	// VK moved powInput from const to obfuscated function arg (2026-09-07, BUG-007)
+	regexp.MustCompile(`\}\("([^"]+)",(\d+),"pow_timeout"\)`),
 }
 
 // difficultyPatterns lists known ways the PoW difficulty is encoded.
