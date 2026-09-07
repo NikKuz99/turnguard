@@ -454,18 +454,20 @@ def test_vpn_config_mapping():
     Verifies BUG-006 fix: vpn: VPNConfig { enabled, ... } not vpn: bool.
     """
     r = TestResult("vpn_config_mapping", "vpn")
-    # Check that lib.rs has VPNConfig struct (not just vpn: bool)
+    # Check that lib.rs has VPNConfig struct
     code, out, _ = run_cmd(f"grep -c 'struct VPNConfig' {REPO}/gui/turnguard-gui/src-tauri/src/lib.rs")
     count = int(out.strip()) if out.strip().isdigit() else 0
     has_vpn_struct = count >= 1
 
-    # Check that vpn field is VPNConfig type (not bool)
-    code, out, _ = run_cmd(f"grep -A2 'struct TunnelConfig' {REPO}/gui/turnguard-gui/src-tauri/src/lib.rs | grep -c 'vpn: VPNConfig'")
+    # Check that vpn field is VPNConfig type (search in struct block)
+    code, out, _ = run_cmd(
+        f"grep -A 15 'struct TunnelConfig' {REPO}/gui/turnguard-gui/src-tauri/src/lib.rs | grep -c 'vpn: VPNConfig' || true"
+    )
     has_vpn_type = int(out.strip()) if out.strip().isdigit() else 0
 
-    # Check parse_conf_content sets vpn.enabled
+    # Check parse_conf_content sets enabled: true
     code, out, _ = run_cmd(
-        f"grep -A3 'enabled: true' {REPO}/gui/turnguard-gui/src-tauri/src/lib.rs | grep -c 'enabled: true'"
+        f"grep -c 'enabled: true' {REPO}/gui/turnguard-gui/src-tauri/src/lib.rs"
     )
     has_enabled_true = int(out.strip()) if out.strip().isdigit() else 0
 
@@ -480,33 +482,18 @@ def test_vpn_config_mapping():
 
 def test_vpn_json_contract():
     """Rust TunnelConfig serializes to JSON that Go Config can deserialize.
-    Creates a TunnelConfig with vpn: VPNConfig { enabled: true, ... } and verifies
-    the JSON has 'vpn': { 'enabled': true, ... } (not 'vpn': true).
+    Verifies frontend expects vpn.enabled (not vpn as bool) and Go expects nested VPNConfigSection.
     """
     r = TestResult("vpn_json_contract", "vpn")
-    # Write a small Rust test program that serializes TunnelConfig and prints JSON
-    test_code = '''
-// This test verifies that TunnelConfig.vpn serializes as nested object, not bool
-#[test]
-fn test_vpn_serializes_as_object() {
-    use turnguard_gui_lib::TunnelConfig;
-    // We can't access TunnelConfig directly (it's not pub), so we test via JSON
-    let json = r#"{"vpn": {"enabled": true, "private_key": "abc"}}"#;
-    let parsed: serde_json::Value = serde_json::from_str(json).unwrap();
-    assert!(parsed["vpn"].is_object(), "vpn should be object, not bool");
-    assert_eq!(parsed["vpn"]["enabled"], true);
-}
-'''
-    # Instead of compiling a test, just verify the JSON structure via grep
-    # Check that App.tsx (frontend) expects vpn.enabled (not vpn as bool)
+    # Check that App.tsx expects vpn.enabled (not vpn as bool)
     code, out, _ = run_cmd(
-        f"grep -c 'vpn.enabled\\|vpn: VpnConfig\\|vpn: \\{{' {REPO}/gui/turnguard-gui/src/App.tsx"
+        f"grep -c 'vpn.enabled' {REPO}/gui/turnguard-gui/src/App.tsx || true"
     )
     frontend_uses_nested = int(out.strip()) if out.strip().isdigit() else 0
 
     # Check Go Config expects vpn as VPNConfigSection (nested)
     code, out, _ = run_cmd(
-        f"grep -c 'VPN.*VPNConfigSection\\|VPNConfigSection struct' {REPO}/internal/core/config.go"
+        f"grep -c 'VPNConfigSection' {REPO}/internal/core/config.go"
     )
     go_uses_nested = int(out.strip()) if out.strip().isdigit() else 0
 
