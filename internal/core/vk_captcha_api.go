@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"math/rand"
 	neturl "net/url"
 	"strconv"
