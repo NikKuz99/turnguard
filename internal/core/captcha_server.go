@@ -210,7 +210,7 @@ func SolveCaptchaWithProxy(redirectURI string) string {
 		if strings.Contains(contentType, "text/html") {
 			// Inject JS to intercept captcha success
 			body := string(bodyBytes)
-			webpackFix := "<script>if(typeof window.__webpack_public_path__==='undefined'){window.__webpack_public_path__='';}</script>"
+			webpackFix := "<script>if(typeof window.__webpack_public_path__==='undefined'){window.__webpack_public_path__='';}if(!document.currentScript){document.currentScript={src:window.location.href};}try{Object.defineProperty(document,'currentScript',{get:function(){return{src:window.location.href};},configurable:true});}catch(e){}</script>"
 			injectedJS := webpackFix + fmt.Sprintf(`
 <script>
 (function() {
