@@ -210,7 +210,8 @@ func SolveCaptchaWithProxy(redirectURI string) string {
 		if strings.Contains(contentType, "text/html") {
 			// Inject JS to intercept captcha success
 			body := string(bodyBytes)
-			injectedJS := fmt.Sprintf(`
+			webpackFix := "<script>if(typeof window.__webpack_public_path__==='undefined'){window.__webpack_public_path__='';}</script>"
+			injectedJS := webpackFix + fmt.Sprintf(`
 <script>
 (function() {
     // Intercept XHR to capture success_token
