@@ -642,7 +642,7 @@ CATEGORIES = {
     "go": ["go_build_linux", "go_build_windows", "go_version_format"],
     "build": ["cargo_check", "cargo_check_windows", "version_consistency"],
     "parser": ["conf_parser_basic", "conf_parser_turn_comments", "conf_parser_android_format", "rust_parser_tests"],
-    "captcha": ["captcha_bootstrap_patterns", "captcha_server_gzip", "captcha_proxy_assets", "captcha_manual_mode_disabled", "captcha_rate_limit_backoff"],
+    "captcha": ["captcha_bootstrap_patterns", "captcha_server_gzip", "captcha_proxy_assets", "captcha_settings_from_initsession", "captcha_stdlib_http", "captcha_dynamic_debug_info", "captcha_manual_mode_disabled", "captcha_rate_limit_backoff"],
     "updater": ["updater_etag", "updater_rate_limit"],
     "frontend": ["frontend_build", "frontend_import_tunnel"],
     "tray": ["tray_icon_setup", "tray_close_to_tray", "tray_show_window_command"],
