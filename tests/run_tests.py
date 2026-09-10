@@ -277,6 +277,51 @@ def test_captcha_proxy_assets():
     return r
 
 
+
+
+# ─── BUG-011 tests (2026-09-11): VK captcha API overhaul ────────────────────
+
+def test_captcha_settings_from_initsession():
+    """BUG-011: captcha settings must come from initSession content_settings."""
+    r = TestResult("captcha_settings_from_initsession", "captcha")
+    code, out, _ = run_cmd(
+        f"grep -c 'content_settings' {REPO}/internal/core/slider_captcha.go || true"
+    )
+    count = int(out.strip()) if out.strip().isdigit() else 0
+    r.passed = count >= 1
+    r.message = (
+        f"initSession content_settings parsing present ({count} refs)"
+        if r.passed
+        else "BUG-011 fix missing: captcha settings not read from initSession"
+    )
+    return r
+
+
+def test_captcha_stdlib_http():
+    """BUG-011: captcha requests must use stdlib net/http (tls-client hello
+    is fingerprinted by VK -> status=BOT)."""
+    r = TestResult("captcha_stdlib_http", "captcha")
+    code, out, _ = run_cmd(
+        f"grep -c 'http.NewRequestWithContext' {REPO}/internal/core/vk_captcha_api.go || true"
+    )
+    count = int(out.strip()) if out.strip().isdigit() else 0
+    r.passed = count >= 2
+    r.message = f"captcha uses stdlib net/http ({count} refs)" if r.passed else "BUG-011: captcha still uses fhttp/tls-client"
+    return r
+
+
+def test_captcha_dynamic_debug_info():
+    """BUG-011: debug_info is per-page-load UUID, extracted dynamically."""
+    r = TestResult("captcha_dynamic_debug_info", "captcha")
+    code, out, _ = run_cmd(
+        f"grep -c 'brlefapmjnpg' {REPO}/internal/core/vk_captcha_api.go || true"
+    )
+    count = int(out.strip()) if out.strip().isdigit() else 0
+    r.passed = count >= 1
+    r.message = f"dynamic debug_info extraction present ({count} refs)" if r.passed else "BUG-011: debug_info not extracted from page"
+    return r
+
+
 def test_captcha_manual_mode_disabled():
     """Manual captcha browser fallback disabled while BFF SPA proxy is broken.
 
@@ -565,6 +610,9 @@ ALL_TESTS = [
     test_captcha_server_gzip,
     test_captcha_proxy_assets,
     test_captcha_manual_mode_disabled,
+    test_captcha_settings_from_initsession,
+    test_captcha_stdlib_http,
+    test_captcha_dynamic_debug_info,
     test_captcha_rate_limit_backoff,
     # Updater
     test_updater_etag,

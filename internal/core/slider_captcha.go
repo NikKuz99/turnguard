@@ -11,6 +11,9 @@ import (
 	_ "image/jpeg"
 	"io"
 	"log"
+	"math/rand"
+	"net/http"
+	"os"
 	neturl "net/url"
 	"regexp"
 	"sort"
@@ -18,7 +21,6 @@ import (
 	"strings"
 	"time"
 
-	fhttp "github.com/bogdanfinn/fhttp"
 	tlsclient "github.com/kiper292/tls-client"
 )
 
@@ -33,9 +35,11 @@ type captchaNotRobotSession struct {
 	sessionToken string
 	hash         string
 	streamID     int
-	client       tlsclient.HttpClient
+	httpClient   *http.Client
 	profile      Profile
 	browserFp    string
+	debugInfo    string
+	adFp         string
 }
 
 type captchaSettingsResponse struct {
@@ -66,6 +70,7 @@ type captchaBootstrap struct {
 	PowInput   string
 	Difficulty int
 	Settings   *captchaSettingsResponse
+	DebugInfo  string
 }
 
 func newCaptchaNotRobotSession(
@@ -73,17 +78,22 @@ func newCaptchaNotRobotSession(
 	sessionToken string,
 	hash string,
 	streamID int,
-	client tlsclient.HttpClient,
+	_client tlsclient.HttpClient,
+	httpClient *http.Client,
 	profile Profile,
+	debugInfo string,
+	adFp string,
 ) *captchaNotRobotSession {
 	return &captchaNotRobotSession{
 		ctx:          ctx,
 		sessionToken: sessionToken,
 		hash:         hash,
 		streamID:     streamID,
-		client:       client,
+		httpClient:   httpClient,
 		profile:      profile,
 		browserFp:    generateBrowserFp(profile),
+		debugInfo:    debugInfo,
+		adFp:         adFp,
 	}
 }
 
@@ -91,7 +101,7 @@ func (s *captchaNotRobotSession) baseValues() neturl.Values {
 	values := neturl.Values{}
 	values.Set("session_token", s.sessionToken)
 	values.Set("domain", "vk.com")
-	values.Set("adFp", "")
+	values.Set("adFp", s.adFp)
 	values.Set("access_token", "")
 	return values
 }
@@ -99,12 +109,15 @@ func (s *captchaNotRobotSession) baseValues() neturl.Values {
 func (s *captchaNotRobotSession) request(method string, values neturl.Values) (map[string]interface{}, error) {
 	reqURL := "https://api.vk.ru/method/" + method + "?v=5.131"
 
-	req, err := fhttp.NewRequestWithContext(s.ctx, "POST", reqURL, strings.NewReader(values.Encode()))
+	// BUG-011: stdlib net/http — VK fingerprints the tls-client uTLS hello
+	req, err := http.NewRequestWithContext(s.ctx, "POST", reqURL, strings.NewReader(values.Encode()))
 	if err != nil {
 		return nil, err
 	}
 
-	httpResp, err := s.client.Do(req)
+	applyCaptchaHeadersHTTP(req, s.profile)
+
+	httpResp, err := s.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -115,6 +128,13 @@ func (s *captchaNotRobotSession) request(method string, values neturl.Values) (m
 	body, err := io.ReadAll(httpResp.Body)
 	if err != nil {
 		return nil, err
+	}
+
+	if os.Getenv("TG_CAPTCHA_DEBUG") == "1" {
+		if f, ferr := os.OpenFile("/tmp/captcha_raw.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); ferr == nil {
+			fmt.Fprintf(f, "\n=== %s ===\nREQ: %s\nRESP: %s\n", method, values.Encode(), string(body))
+			f.Close()
+		}
 	}
 
 	var resp map[string]interface{}
@@ -130,6 +150,52 @@ func (s *captchaNotRobotSession) requestSettings() (*captchaSettingsResponse, er
 		return nil, fmt.Errorf("settings failed: %w", err)
 	}
 	return parseCaptchaSettingsResponse(resp)
+}
+
+func (s *captchaNotRobotSession) requestInitSession() (string, string, error) {
+	values := s.baseValues()
+	values.Set("lang", "3")
+	resp, err := s.request("captchaNotRobot.initSession", values)
+	if err != nil {
+		return "", "", fmt.Errorf("initSession failed: %w", err)
+	}
+	respObj, ok := resp["response"].(map[string]interface{})
+	if !ok {
+		return "", "", fmt.Errorf("invalid initSession response: %v", resp)
+	}
+	showType, _ := respObj["show_captcha_type"].(string)
+
+	// BUG-011 (2026-09-11): VK moved captcha settings from captchaNotRobot.settings
+	// to initSession response. New field: content_settings[{type, settings_key}].
+	// Fallback to legacy captcha_settings[{type, settings|settings_key}].
+	extractSliderKey := func(raw interface{}) string {
+		items, ok := raw.([]interface{})
+		if !ok {
+			return ""
+		}
+		for _, rawItem := range items {
+			item, ok := rawItem.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if t, _ := item["type"].(string); t != sliderCaptchaType {
+				continue
+			}
+			if key, _ := item["settings_key"].(string); key != "" {
+				return key
+			}
+			if key, _ := item["settings"].(string); key != "" {
+				return key
+			}
+		}
+		return ""
+	}
+
+	sliderKey := extractSliderKey(respObj["content_settings"])
+	if sliderKey == "" {
+		sliderKey = extractSliderKey(respObj["captcha_settings"])
+	}
+	return sliderKey, showType, nil
 }
 
 func (s *captchaNotRobotSession) requestComponentDone() error {
@@ -153,7 +219,8 @@ func (s *captchaNotRobotSession) requestComponentDone() error {
 }
 
 func (s *captchaNotRobotSession) requestCheckboxCheck() (*captchaCheckResult, error) {
-	return s.requestCheck(generateSliderCursor(0, 1), base64.StdEncoding.EncodeToString([]byte("{}")))
+	// BUG-011 ground truth: real browser passed with EMPTY sensor arrays
+	return s.requestCheck("[]", base64.StdEncoding.EncodeToString([]byte("{}")))
 }
 
 func (s *captchaNotRobotSession) requestSliderContent(sliderSettings string) (*sliderCaptchaContent, error) {
@@ -185,12 +252,14 @@ func (s *captchaNotRobotSession) requestCheck(cursor string, answer string) (*ca
 	values.Set("motion", "[]")
 	values.Set("cursor", cursor)
 	values.Set("taps", "[]")
-	values.Set("connectionRtt", "[]")
-	values.Set("connectionDownlink", "[]")
 	values.Set("browser_fp", s.browserFp)
 	values.Set("hash", s.hash)
 	values.Set("answer", answer)
-	values.Set("debug_info", captchaDebugInfo)
+	debugInfo := s.debugInfo
+	if debugInfo == "" {
+		debugInfo = captchaDebugInfo
+	}
+	values.Set("debug_info", debugInfo)
 
 	resp, err := s.request("captchaNotRobot.check", values)
 	if err != nil {
@@ -214,8 +283,20 @@ func callCaptchaNotRobotWithSliderPOC(
 	client tlsclient.HttpClient,
 	profile Profile,
 	initialSettings *captchaSettingsResponse,
+	debugInfo string,
+	adFp string,
+	httpClient *http.Client,
 ) (string, error) {
-	session := newCaptchaNotRobotSession(ctx, sessionToken, hash, streamID, client, profile)
+	session := newCaptchaNotRobotSession(ctx, sessionToken, hash, streamID, nil, httpClient, profile, debugInfo, adFp)
+
+	// BUG-011: captcha_settings moved to initSession response (content_settings).
+	log.Printf("[STREAM %d] [Captcha] Step 0: initSession", streamID)
+	sliderSettingsKey, initShowType, err := session.requestInitSession()
+	if err != nil {
+		return "", err
+	}
+	log.Printf("[STREAM %d] [Captcha] initSession: show_captcha_type=%s slider_settings=%t", streamID, initShowType, sliderSettingsKey != "")
+	time.Sleep(200 * time.Millisecond)
 
 	log.Printf("[STREAM %d] [Captcha] Step 1/4: settings", streamID)
 	settingsResp, err := session.requestSettings()
@@ -233,6 +314,12 @@ func callCaptchaNotRobotWithSliderPOC(
 
 	time.Sleep(200 * time.Millisecond)
 
+	// BUG-011: emulate human interaction time — cursor sampling (20+ pts x 200ms)
+	// plus render/reading time; a check fired <1s after componentDone is a bot signal.
+	humanPause := time.Duration(4200+rand.Intn(1300)) * time.Millisecond
+	log.Printf("[STREAM %d] [Captcha] Emulating interaction (%v)...", streamID, humanPause)
+	time.Sleep(humanPause)
+
 	log.Printf("[STREAM %d] [Captcha] Step 3/4: check", streamID)
 	initialCheck, err := session.requestCheckboxCheck()
 	if err != nil {
@@ -247,6 +334,9 @@ func callCaptchaNotRobotWithSliderPOC(
 	}
 
 	sliderSettings, hasSlider := settingsResp.SettingsByType[sliderCaptchaType]
+	if sliderSettingsKey != "" {
+		sliderSettings, hasSlider = sliderSettingsKey, true
+	}
 	log.Printf(
 		"[STREAM %d] [Captcha] Checkbox-style check returned status=%s (settings show_type=%q, check show_type=%q, available_types=%s)",
 		streamID,
@@ -841,32 +931,78 @@ func absDiff(left uint32, right uint32) int64 {
 }
 
 func generateSliderCursor(candidateIndex int, candidateCount int) string {
-	return buildSliderCursor(candidateIndex, candidateCount, time.Now().Add(-220*time.Millisecond).UnixMilli())
+	return buildSliderCursor(candidateIndex, candidateCount)
 }
 
-func buildSliderCursor(candidateIndex int, candidateCount int, startTime int64) string {
+// buildHumanCursor produces a realistic mouse trajectory toward a target:
+// eased acceleration, curvature, overshoot, then hover jitter before the click.
+func buildHumanCursor(targetX int, targetY int, points int) string {
+	type cursorPoint struct {
+		X int `json:"x"`
+		Y int `json:"y"`
+	}
+	if points <= 0 {
+		points = 20
+	}
+	startX := targetX - 250 - rand.Intn(350)
+	startY := targetY - 180 - rand.Intn(120)
+	curve := 40 + rand.Intn(70)
+	if rand.Intn(2) == 0 {
+		curve = -curve
+	}
+	out := make([]cursorPoint, 0, points)
+	for step := 0; step < points; step++ {
+		p := float64(step) / float64(points-1)
+		ease := p * p * (3 - 2*p) // smoothstep
+		x := startX + int(float64(targetX-startX)*ease)
+		baseY := startY + int(float64(targetY-startY)*ease)
+		bend := int(float64(curve) * 4 * p * (1 - p)) // parabola bulge
+		y := baseY + bend
+		if step == points-1 {
+			x = targetX
+			y = targetY
+		}
+		out = append(out, cursorPoint{X: x, Y: y})
+	}
+	// hover jitter at the target (settle before click)
+	for j := 0; j < 3; j++ {
+		out = append(out, cursorPoint{
+			X: targetX + rand.Intn(3) - 1,
+			Y: targetY + rand.Intn(3) - 1,
+		})
+	}
+	data, err := json.Marshal(out)
+	if err != nil {
+		return "[]"
+	}
+	return string(data)
+}
+
+// buildSliderCursor emits the web-sensor cursor format: [{"x":..,"y":..}, ...].
+// BUG-011: timestamps removed (sampling is server-side inferred from sensors_delay).
+func buildSliderCursor(candidateIndex int, candidateCount int) string {
 	if candidateCount <= 0 {
 		return "[]"
 	}
 
 	type cursorPoint struct {
-		X int   `json:"x"`
-		Y int   `json:"y"`
-		T int64 `json:"t"`
+		X int `json:"x"`
+		Y int `json:"y"`
 	}
 
 	startX := 140
 	endX := startX + 620*candidateIndex/candidateCount
 	startY := 430
 
-	points := make([]cursorPoint, 0, 12)
-	for step := 0; step < 12; step++ {
-		x := startX + (endX-startX)*step/11
-		y := startY + ((step % 3) - 1)
+	points := make([]cursorPoint, 0, 24)
+	for step := 0; step < 24; step++ {
+		p := float64(step) / 23.0
+		ease := p * p * (3 - 2*p)
+		x := startX + int(float64(endX-startX)*ease)
+		y := startY + ((step*7)%5) - 2 + int(float64(20)*4*p*(1-p))
 		points = append(points, cursorPoint{
 			X: x,
 			Y: y,
-			T: startTime + int64(step*18),
 		})
 	}
 
