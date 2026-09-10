@@ -262,7 +262,12 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 	data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=%s&access_token=%s", link, escapedName, token1)
 	urlAddr := fmt.Sprintf("https://api.vk.ru/method/calls.getAnonymousToken?v=5.275&client_id=%s", creds.ClientID)
 
-	manualCaptcha := true
+	// BUG-009 workaround (2026-09-10, §25 cross-platform sync from Android): manual captcha disabled.
+	// Desktop manual fallback opens the system browser via captcha_server proxy which shows
+	// a white screen (BFF SPA assets not proxied, lessons BUG: 'White screen in manual browser
+	// fallback — NOT FIXED') and blocks the credential loop. Auto/slider retry re-solves fast.
+	// Re-enable after captcha_server proxy supports VK BFF SPA (JS bundles + API + CORS).
+	manualCaptcha := false
 	autoCaptchaSliderPOC := true
 	streamID := 0
 	

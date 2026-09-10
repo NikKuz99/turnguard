@@ -83,6 +83,17 @@ func (s *stream) run(link string, peer *net.UDPAddr, udp bool, okchan chan<- str
 		sCancel()
 		return
 	}
+	// isCaptchaRateLimit reports whether err is caused by VK captcha rate
+	// limiting and needs a longer reconnect backoff instead of the fast 1s retry.
+	isCaptchaRateLimit := func(err error) bool {
+		if err == nil {
+			return false
+		}
+		s := err.Error()
+		return strings.Contains(s, "CAPTCHA_WAIT_REQUIRED") ||
+			strings.Contains(s, "check status: BOT") ||
+			strings.Contains(s, "check status: ERROR_LIMIT")
+	}
 	getCreds = func() (string, string, string, error) {
 		user, pass, addr, err := globalGetCreds(sCtx, link, s.id)
 		return user, pass, addr, err
@@ -91,10 +102,19 @@ func (s *stream) run(link string, peer *net.UDPAddr, udp bool, okchan chan<- str
 	for {
 		user, pass, turnAddr, err := getCreds()
 		if err != nil {
-			util.TurnLog("[STREAM %d] Error: TURN creds failed: %v. Reconnecting in 1s...", s.id, err)
+			// BUG-010 backoff (2026-09-10, §25 sync from Android): rapid 1s retries
+			// hammer the VK captcha API and escalate rate limiting (BOT / ERROR_LIMIT).
+			// With manual captcha disabled the old browser-fallback block no longer
+			// acts as an accidental pause, so back off explicitly.
+			delay := 1 * time.Second
+			if isCaptchaRateLimit(err) {
+				delay = 20 * time.Second
+				util.TurnLog("[STREAM %d] Captcha rate-limited, backing off %v...", s.id, delay)
+			}
+			util.TurnLog("[STREAM %d] Error: TURN creds failed: %v. Reconnecting in %v...", s.id, err, delay)
 			select {
 			case <-sCtx.Done(): return
-			case <-time.After(1 * time.Second):
+			case <-time.After(delay):
 			}
 			continue
 		}

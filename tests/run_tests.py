@@ -277,6 +277,45 @@ def test_captcha_proxy_assets():
     return r
 
 
+def test_captcha_manual_mode_disabled():
+    """Manual captcha browser fallback disabled while BFF SPA proxy is broken.
+
+    BUG-009 (2026-09-10, §25 sync from Android): the manual fallback opened the
+    system browser via captcha_server reverse proxy, which renders a white
+    screen (VK BFF SPA assets not proxied) and blocks the credential loop.
+    Disabled in favour of the fast auto/slider retry loop.
+    """
+    r = TestResult("captcha_manual_mode_disabled", "captcha")
+    code, out, _ = run_cmd(f"grep -c 'manualCaptcha := false' {REPO}/internal/vk/vk.go")
+    count = int(out.strip()) if out.strip().isdigit() else 0
+    r.passed = count == 1
+    r.message = (
+        "Manual captcha disabled (fast retry loop handles solving)"
+        if r.passed
+        else "manualCaptcha := false not found — manual browser fallback enabled (white-screen + block risk)"
+    )
+    return r
+
+
+def test_captcha_rate_limit_backoff():
+    """Captcha rate-limit errors use long reconnect backoff — BUG-010 mitigation.
+
+    BUG-010 (2026-09-10, §25 sync from Android): rapid 1s retries hammer the VK
+    captcha API and escalate rate limiting (check status: BOT / ERROR_LIMIT).
+    Fix: 20s backoff when the error is captcha-rate-limit-related.
+    """
+    r = TestResult("captcha_rate_limit_backoff", "captcha")
+    code, out, _ = run_cmd(f"grep -c 'isCaptchaRateLimit' {REPO}/internal/core/turn_client.go")
+    count = int(out.strip()) if out.strip().isdigit() else 0
+    r.passed = count >= 2  # closure definition + usage
+    r.message = (
+        f"Backoff present (refs: {count})"
+        if r.passed
+        else "Captcha backoff missing — 1s retries will escalate VK rate limiting"
+    )
+    return r
+
+
 # ─── 5. Updater ETag tests ──────────────────────────────────────────────────
 
 def test_updater_etag():
@@ -525,6 +564,8 @@ ALL_TESTS = [
     test_captcha_bootstrap_patterns,
     test_captcha_server_gzip,
     test_captcha_proxy_assets,
+    test_captcha_manual_mode_disabled,
+    test_captcha_rate_limit_backoff,
     # Updater
     test_updater_etag,
     test_updater_rate_limit_handling,
@@ -553,7 +594,7 @@ CATEGORIES = {
     "go": ["go_build_linux", "go_build_windows", "go_version_format"],
     "build": ["cargo_check", "cargo_check_windows", "version_consistency"],
     "parser": ["conf_parser_basic", "conf_parser_turn_comments", "conf_parser_android_format", "rust_parser_tests"],
-    "captcha": ["captcha_bootstrap_patterns", "captcha_server_gzip", "captcha_proxy_assets"],
+    "captcha": ["captcha_bootstrap_patterns", "captcha_server_gzip", "captcha_proxy_assets", "captcha_manual_mode_disabled", "captcha_rate_limit_backoff"],
     "updater": ["updater_etag", "updater_rate_limit"],
     "frontend": ["frontend_build", "frontend_import_tunnel"],
     "tray": ["tray_icon_setup", "tray_close_to_tray", "tray_show_window_command"],
