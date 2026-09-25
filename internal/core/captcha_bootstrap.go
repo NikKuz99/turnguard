@@ -49,6 +49,11 @@ var powInputPatterns = []*regexp.Regexp{
 	// VK BFF obfuscated function call: }("POW_INPUT",DIFFICULTY,"pow_timeout"))
 	// VK moved powInput from const to obfuscated function arg (2026-09-07, BUG-007)
 	regexp.MustCompile(`\}\("([^"]+)",(\d+),"pow_timeout"\)`),
+	// BUG-013 (2026-09-25): VK switched BFF obfuscator from double quotes to
+	// single quotes around the powInput arg. Pattern matches:
+	//   }('AxKyoM9mSvGhdPip',2,'pow_timeout',["native_integrity",...])
+	// Without this, bootstrap fails and check returns ERROR (no valid PoW hash).
+	regexp.MustCompile(`\}\('([^']+)',(\d+),'pow_timeout'`),
 }
 
 // difficultyPatterns lists known ways the PoW difficulty is encoded.

@@ -259,6 +259,14 @@ def test_captcha_bootstrap_patterns():
     return r
 
 
+def test_captcha_pow_input_single_quote():
+    r = TestResult('captcha_pow_input_single_quote', 'captcha')
+    code, out, _ = run_cmd('grep -c BUG-013 ' + REPO + '/internal/core/captcha_bootstrap.go')
+    count = int(out.strip()) if out.strip().isdigit() else 0
+    r.passed = count >= 1
+    r.message = ('BUG-013 single-quote BFF pattern present (' + str(count) + ' refs)') if r.passed else 'BUG-013 pattern missing in captcha_bootstrap.go'
+    return r
+
 def test_captcha_server_gzip():
     """captcha_server.go handles gzip decompression."""
     r = TestResult("captcha_server_gzip", "captcha")
@@ -635,6 +643,7 @@ ALL_TESTS = [
     test_conf_parser_android_format,
     # Captcha
     test_captcha_bootstrap_patterns,
+    test_captcha_pow_input_single_quote,
     test_captcha_server_gzip,
     test_captcha_proxy_assets,
     test_captcha_manual_mode_disabled,
