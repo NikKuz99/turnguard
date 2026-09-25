@@ -16,9 +16,11 @@ package core
 
 import (
 	"fmt"
+	"os"
 	"regexp"
 	"strconv"
-	"strings"
+
+	"github.com/NikKuz99/turnguard/internal/util"
 )
 
 // powInputPatterns lists every known way powInput can appear in the
@@ -95,24 +97,30 @@ func extractDifficulty(html string) int {
 // handles the case where powInput is split across multiple lines or
 // embedded in a JSON blob.
 func parseCaptchaBootstrapHTMLExt(html string) (*captchaBootstrap, error) {
-	powInput, ok := extractPowInput(html)
-	if !ok {
+	// v0.7.0 architecture (BUG-007/BUG-013 lessons): structure-based
+	// tokenizer extraction first — immune to obfuscator drift in quote
+	// style, spacing and number bases — with the legacy regex patterns
+	// (extractPowInput/extractDifficulty) as the safety net for
+	// non-obfuscated page variants.
+	var powInput string
+	var difficulty int
+	if seed, ok := extractPowSeed(html); ok {
+		powInput = seed.PowInput
+		difficulty = seed.Difficulty
+		if os.Getenv("TG_CAPTCHA_DEBUG") == "1" {
+			util.TurnLog("[Captcha] PoW seed via %s (marker %q)", seed.Source, seed.Marker)
+		}
+	} else if powInput, ok = extractPowInput(html); !ok {
 		// One last attempt: maybe powInput is in a JSON string that
 		// got HTML-escaped. Try unescaping and re-searching.
-		unescaped := strings.NewReplacer(
-			`&quot;`, `"`,
-			`&#34;`, `"`,
-			`&amp;`, `&`,
-			`&#x27;`, `'`,
-			`&#39;`, `'`,
-		).Replace(html)
-		powInput, ok = extractPowInput(unescaped)
+		unescaped := htmlUnescapeForPow(html)
+		if powInput, ok = extractPowInput(unescaped); !ok {
+			return nil, fmt.Errorf("powInput not found in captcha HTML (tokenizer layers + %d regex patterns)", len(powInputPatterns))
+		}
 	}
-	if !ok {
-		return nil, fmt.Errorf("powInput not found in captcha HTML (tried %d patterns)", len(powInputPatterns))
+	if difficulty == 0 {
+		difficulty = extractDifficulty(html)
 	}
-
-	difficulty := extractDifficulty(html)
 
 	settings, err := parseCaptchaSettingsFromHTML(html)
 	if err != nil {

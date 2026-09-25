@@ -267,6 +267,46 @@ def test_captcha_pow_input_single_quote():
     r.message = ('BUG-013 single-quote BFF pattern present (' + str(count) + ' refs)') if r.passed else 'BUG-013 pattern missing in captcha_bootstrap.go'
     return r
 
+def test_captcha_pow_tokenizer():
+    """v0.7.0 architecture: tokenizer-based powInput extraction passes Go tests.
+
+    Covers the BUG-007/BUG-013 immune layers: L1a marker, L1b structural,
+    quote/hex/reorder/backtick variants, bare IIFE, negative and
+    false-positive guards (see internal/core/pow_extract_test.go).
+    """
+    r = TestResult("captcha_pow_tokenizer", "captcha")
+    code, out, _ = run_cmd(
+        "cd " + REPO + " && PATH=/usr/local/go/bin:$PATH go test ./internal/core/ "
+        "-run 'TestExtractPowSeed|TestLexJS|TestParseJSNumber' -count=1 2>&1 | tail -3",
+        timeout=180,
+    )
+    ok_line = ""
+    for line in out.splitlines():
+        if line.startswith("ok") or "FAIL" in line:
+            ok_line = line.strip()
+    r.passed = code == 0 and ok_line.startswith("ok")
+    r.message = ("go test internal/core: " + ok_line) if r.passed else ("go test failed: " + (ok_line or out.strip()[-200:]))
+    return r
+
+
+def test_captcha_pow_structure_files():
+    """v0.7.0 architecture files present: lexer, extractor, fixtures."""
+    r = TestResult("captcha_pow_structure_files", "captcha")
+    import os
+    required = [
+        "/internal/core/jstoken.go",
+        "/internal/core/pow_extract.go",
+        "/internal/core/pow_extract_test.go",
+        "/internal/core/testdata/pow_bug013_single.html",
+        "/internal/core/testdata/pow_bug007_double.html",
+        "/internal/core/testdata/pow_variant_renamed.html",
+        "/internal/core/testdata/pow_none.html",
+    ]
+    missing = [p for p in required if not os.path.exists(REPO + p)]
+    r.passed = not missing
+    r.message = ("all v0.7.0 files present") if r.passed else ("missing: " + ", ".join(missing))
+    return r
+
 def test_captcha_server_gzip():
     """captcha_server.go handles gzip decompression."""
     r = TestResult("captcha_server_gzip", "captcha")
@@ -644,6 +684,8 @@ ALL_TESTS = [
     # Captcha
     test_captcha_bootstrap_patterns,
     test_captcha_pow_input_single_quote,
+    test_captcha_pow_tokenizer,
+    test_captcha_pow_structure_files,
     test_captcha_server_gzip,
     test_captcha_proxy_assets,
     test_captcha_manual_mode_disabled,
@@ -680,7 +722,7 @@ CATEGORIES = {
     "go": ["go_build_linux", "go_build_windows", "go_version_format"],
     "build": ["cargo_check", "cargo_check_windows", "version_consistency"],
     "parser": ["conf_parser_basic", "conf_parser_turn_comments", "conf_parser_android_format", "rust_parser_tests"],
-    "captcha": ["captcha_bootstrap_patterns", "captcha_server_gzip", "captcha_proxy_assets", "captcha_settings_from_initsession", "captcha_stdlib_http", "captcha_dynamic_debug_info", "captcha_manual_mode_disabled", "captcha_rate_limit_backoff", "captcha_client_custom_dialer"],
+    "captcha": ["captcha_bootstrap_patterns", "captcha_pow_input_single_quote", "captcha_pow_tokenizer", "captcha_pow_structure_files", "captcha_server_gzip", "captcha_proxy_assets", "captcha_settings_from_initsession", "captcha_stdlib_http", "captcha_dynamic_debug_info", "captcha_manual_mode_disabled", "captcha_rate_limit_backoff", "captcha_client_custom_dialer"],
     "updater": ["updater_etag", "updater_rate_limit"],
     "frontend": ["frontend_build", "frontend_import_tunnel"],
     "tray": ["tray_icon_setup", "tray_close_to_tray", "tray_show_window_command"],
