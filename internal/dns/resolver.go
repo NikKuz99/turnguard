@@ -5,9 +5,6 @@
 
 package dns
 
-(int fd);
-
-
 import (
 	"github.com/NikKuz99/turnguard/internal/util"
 	"bytes"
@@ -465,7 +462,7 @@ func parseDNSResponse(response []byte, domain string) (string, error) {
 }
 
 // protectAndDial creates TCP connection and protects it via Control callback
-func util.ProtectAndDial(ctx context.Context, network, addr string) (net.Conn, error) {
+func ProtectAndDial(ctx context.Context, network, addr string) (net.Conn, error) {
 	dialer := &net.Dialer{
 		Timeout:   5 * time.Second,
 		KeepAlive: 30 * time.Second,

@@ -216,7 +216,8 @@ func main() {
 			os.Exit(1)
 		}
 		util.TurnLog("[VPN] Starting WireGuard TUN device...")
-		vpnDev, err := core.StartVPN(core.VPNConfig{
+		var err error
+		vpnDev, err = core.StartVPN(core.VPNConfig{
 			PrivateKey:   *privateKey,
 			ServerPubKey: *serverPubKey,
 			ServerAddr:   *serverAddr,
@@ -230,7 +231,6 @@ func main() {
 			core.StopProxy()
 			os.Exit(1)
 		}
-		vpnDev = vpnDev
 
 		if *allowedIPs == "0.0.0.0/0, ::0" || *allowedIPs == "0.0.0.0/0" {
 			util.TurnLog("[VPN] Full-tunnel mode: setting up bypass routes...")
@@ -248,5 +248,8 @@ func main() {
 	}
 
 	<-ctx.Done()
+	if vpnDev != nil {
+		vpnDev.Stop()
+	}
 	util.TurnLog("TurnGuard stopped.")
 }
